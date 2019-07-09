@@ -36,7 +36,6 @@ module AtomicModel =
         override __.ConfluentTransition(inputs) =
             state <- confluentTran (state, inputs)
     
-    let create<'TState, 'TInput, 'TOutput>
-        (internalTran, timeAdvance, output, externalTran, confluentTran) initialState =
+    let create (internalTran, timeAdvance, output, externalTran, confluentTran) initialState =
         FSharpAtomicModel<'TState, 'TInput, 'TOutput>(internalTran, timeAdvance, output, externalTran, confluentTran, initialState)
         :> AtomicModel<'TInput, 'TOutput>
