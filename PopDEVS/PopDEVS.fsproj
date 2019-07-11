@@ -6,10 +6,13 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <Compile Include="ImmutableCollection.fs" />
+    <Compile Include="EventInbox.fs" />
     <Compile Include="Simulation.fs" />
     <Compile Include="DevsModel.fs" />
     <Compile Include="AtomicModel.fs" />
     <Compile Include="CoupledModel.fs" />
+    <Compile Include="SequentialCoordinators.fs" />
   </ItemGroup>
 
   <ItemGroup>

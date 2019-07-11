@@ -10,10 +10,9 @@ type AtomicModel<'TInput, 'TOutput>() =
 
     abstract member Output : unit -> 'TOutput seq
 
-    // TODO: inputs をキューにする
-    abstract member ExternalTransition : inputs: 'TInput list -> unit
+    abstract member ExternalTransition : inputs: InputEventBag<'TInput> -> unit
 
-    abstract member ConfluentTransition : inputs: 'TInput list -> unit
+    abstract member ConfluentTransition : inputs: InputEventBag<'TInput> -> unit
 
 module AtomicModel =
     [<Sealed>]
