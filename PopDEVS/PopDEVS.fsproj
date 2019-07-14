@@ -8,6 +8,7 @@
   <ItemGroup>
     <Compile Include="ImmutableCollection.fs" />
     <Compile Include="EventInbox.fs" />
+    <Compile Include="ISimulationContext.fs" />
     <Compile Include="Simulation.fs" />
     <Compile Include="DevsModel.fs" />
     <Compile Include="SequentialCoordinator.fs" />
