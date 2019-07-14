@@ -1,4 +1,4 @@
-module internal PopDEVS.SequentialCoordinators
+module internal PopDEVS.SequentialCoordinator
 
 open System
 open System.Collections.Generic
@@ -34,20 +34,21 @@ type Coordinator() =
         events
 
 [<Sealed>]
-type AtomicModelSimulator(model: AtomicModel.BoxedAtomicModel) =
+type AtomicModelSimulator(model: BoxedDevsModel.AtomicModel) =
     inherit Coordinator()
 
+    let mutable state = null
     let mutable lastTime = 0.0
 
     override this.Initialize(initialTime) =
         lastTime <- initialTime
-        this.NextTime <- initialTime + model.TimeAdvance()
+        this.NextTime <- initialTime + model.TimeAdvance state
 
     override this.CollectOutputs(time) =
         assert (time >= lastTime && time <= this.NextTime)
 
         if time = this.NextTime then
-            model.Output()
+            model.Output state
         else
             Seq.empty
 
@@ -56,9 +57,9 @@ type AtomicModelSimulator(model: AtomicModel.BoxedAtomicModel) =
         assert (time = this.NextTime || (inbox.Length > 0 && this.ExternalTime = time))
 
         let elapsed = { Completed = time = this.NextTime; Elapsed = time - this.NextTime }
-        model.Transition(elapsed, inbox :> obj seq)
+        state <- model.Transition (state, elapsed, inbox :> obj seq)
         lastTime <- time
-        this.NextTime <- time + model.TimeAdvance()
+        this.NextTime <- time + model.TimeAdvance state
 
 [<Sealed>]
 type CoupledModelSimulator(subcoordinators: ImmutableArray<Coordinator>,
@@ -122,3 +123,44 @@ type CoupledModelSimulator(subcoordinators: ImmutableArray<Coordinator>,
             minTime <- min minTime coordinator.NextTime
 
         this.NextTime <- minTime
+
+let create (model: DevsModel) =
+    let rec createFromBoxed (model: BoxedDevsModel.Model) =
+        let createAtomic (model: BoxedDevsModel.AtomicModel) =
+            AtomicModelSimulator(model)
+
+        let createCoupled (model: BoxedDevsModel.CoupledModel) =
+            let componentCount = model.Components.Count
+            let indexTable = Dictionary(componentCount)
+            let componentIds = Array.zeroCreate componentCount
+            let subcoordinatorsBuilder = ImmutableArray.CreateBuilder(componentCount)
+            for kvp in model.Components do
+                let id, submodel = kvp.Key, kvp.Value
+                let index = subcoordinatorsBuilder.Count
+                indexTable.Add(id, index)
+                componentIds.[index] <- id
+                subcoordinatorsBuilder.Add(createFromBoxed submodel)
+
+            let convertTranslations (dic: ImmutableDictionary<_, _>) =
+                dic |> Seq.map (fun kvp -> (indexTable.[kvp.Key], kvp.Value))
+                    |> ImmutableArray.CreateRange
+
+            let translations =
+                componentIds
+                |> Seq.map (fun id ->
+                    match model.Translations.TryFind(id) with
+                    | Some dic -> convertTranslations dic
+                    | None -> ImmutableArray.Empty)
+                |> ImmutableArray.CreateRange
+
+            CoupledModelSimulator(
+                subcoordinatorsBuilder.MoveToImmutable(),
+                translations,
+                convertTranslations model.InputTranslations,
+                convertTranslations model.OutputTranslations)
+
+        match model with
+        | BoxedDevsModel.Model.Atomic x -> createAtomic x :> Coordinator
+        | BoxedDevsModel.Model.Coupled x -> createCoupled x :> Coordinator
+
+    createFromBoxed model.Inner
