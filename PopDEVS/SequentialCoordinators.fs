@@ -1,70 +1,124 @@
 module internal PopDEVS.SequentialCoordinators
 
+open System
 open System.Collections.Generic
+open System.Collections.Immutable
 
 [<AbstractClass>]
 type Coordinator() =
-    abstract member Initialize : initialTime: float -> unit
-    abstract member CollectOutputs : time: float -> obj seq
-    abstract member Inbox : event: obj * time: float -> unit
-    abstract member AdvanceSimulation : time: float -> unit
-
-[<Sealed>]
-type AtomicModelSimulator(model: AtomicModel.BoxedAtomicModel) =
-    inherit Coordinator()
-
-    let mutable lastTime = 0.0
-    let mutable nextTime = 0.0
     let mutable externalTime = 0.0
     let inbox = List<obj>()
 
-    override __.Initialize(initialTime) =
-        lastTime <- initialTime
-        nextTime <- initialTime + model.TimeAdvance()
+    member val NextTime = 0.0 with get, set
+    member internal __.ExternalTime = externalTime
 
-    override __.CollectOutputs(time) =
-        assert (time >= lastTime && time <= nextTime)
+    abstract member Initialize : initialTime: float -> unit
+    abstract member CollectOutputs : time: float -> obj seq
+    abstract member AdvanceSimulation : time: float -> unit
 
-        if time = nextTime then
-            model.Output()
-        else
-            Seq.empty
-
-    override __.Inbox(event, time) =
+    member this.Inbox(event: obj, time: float) =
         if inbox.Count = 0 then
-            assert (time >= lastTime && time <= nextTime)
+            assert (time <= this.NextTime)
             externalTime <- time
         else
             assert (time = externalTime)
 
         inbox.Add(event)
 
-    override __.AdvanceSimulation(time) =
-        assert (time = nextTime || (inbox.Count > 0 && externalTime = time))
+    member internal __.TakeInbox(time) =
+        if time <> externalTime then
+            raise (InvalidOperationException())
 
-        let elapsed = { Completed = time = nextTime; Elapsed = time - nextTime }
-        model.Transition(elapsed, inbox :> obj seq)
+        let events = ImmutableArray.CreateRange(inbox)
         inbox.Clear()
-        lastTime <- time
-        nextTime <- time + model.TimeAdvance()
+        events
 
 [<Sealed>]
-type CoupledModelSimulator(model: CoupledModel<_, _>) =
+type AtomicModelSimulator(model: AtomicModel.BoxedAtomicModel) =
     inherit Coordinator()
 
-    // TODO: subcoordinators を引数に取らないと……
-    let mutable futureEventList = [0.0]
-    let mutable lastProcessedTime = 0.0
+    let mutable lastTime = 0.0
 
-    override __.Initialize(initialTime) =
-        raise (System.NotImplementedException())
+    override this.Initialize(initialTime) =
+        lastTime <- initialTime
+        this.NextTime <- initialTime + model.TimeAdvance()
+
+    override this.CollectOutputs(time) =
+        assert (time >= lastTime && time <= this.NextTime)
+
+        if time = this.NextTime then
+            model.Output()
+        else
+            Seq.empty
+
+    override this.AdvanceSimulation(time) =
+        let inbox = this.TakeInbox(time)
+        assert (time = this.NextTime || (inbox.Length > 0 && this.ExternalTime = time))
+
+        let elapsed = { Completed = time = this.NextTime; Elapsed = time - this.NextTime }
+        model.Transition(elapsed, inbox :> obj seq)
+        lastTime <- time
+        this.NextTime <- time + model.TimeAdvance()
+
+[<Sealed>]
+type CoupledModelSimulator(subcoordinators: ImmutableArray<Coordinator>,
+                           translations: ImmutableArray<ImmutableArray<int * (obj -> obj option)>>,
+                           inputTranslations: ImmutableArray<int * (obj -> obj option)>,
+                           outputTranslations: ImmutableArray<int * (obj -> obj option)>) =
+    inherit Coordinator()
+
+    let mutable lastTime = 0.0
+
+    override this.Initialize(initialTime) =
+        lastTime <- initialTime
+
+        let mutable minNextTime = infinity
+        for subcoordinator in subcoordinators do
+            subcoordinator.Initialize(initialTime)
+            minNextTime <- min minNextTime subcoordinator.NextTime
+        this.NextTime <- minNextTime
 
     override __.CollectOutputs(time) =
-        raise (System.NotImplementedException())
+        outputTranslations
+        |> Seq.collect (fun (index, transFunc) ->
+            subcoordinators.[index].CollectOutputs(time)
+            |> Seq.choose transFunc)
 
-    override __.Inbox(event, time) =
-        raise (System.NotImplementedException("translation して subcoordinator に転送"))
+    override this.AdvanceSimulation(time) =
+        assert (time >= lastTime && time <= this.NextTime)
 
-    override __.AdvanceSimulation(time) =
-        assert (time >= lastProcessedTime && time <= List.head futureEventList)
-        raise (System.NotImplementedException())
+        let synchronizeSet = HashSet()
+
+        let deliverInputs (tran: (int * (obj -> obj option)) seq) events =
+            let translate event (destIndex, transFunc) =
+                transFunc event
+                |> Option.map (fun transformed -> (destIndex, transformed))
+            let deliver (destIndex, transformedEvent) =
+                subcoordinators.[destIndex].Inbox(transformedEvent, time)
+                synchronizeSet.Add(destIndex) |> ignore
+            events
+            |> Seq.collect (fun event -> tran |> Seq.choose (translate event))
+            |> Seq.iter deliver
+
+        let deliverExternalInputs () =
+            deliverInputs inputTranslations (this.TakeInbox(time))
+
+        let collectImminents () =
+            let imminentSubcoordinators =
+                subcoordinators
+                |> Seq.indexed
+                |> Seq.filter (fun (_, c) -> c.NextTime = time)
+            for (imminentIndex, coordinator) in imminentSubcoordinators do
+                synchronizeSet.Add(imminentIndex) |> ignore
+                deliverInputs translations.[imminentIndex] (coordinator.CollectOutputs(time))
+
+        deliverExternalInputs ()
+        collectImminents ()
+
+        let mutable minTime = infinity
+        for coordinatorIndex in synchronizeSet do
+            let coordinator = subcoordinators.[coordinatorIndex]
+            coordinator.AdvanceSimulation(time)
+            minTime <- min minTime coordinator.NextTime
+
+        this.NextTime <- minTime
