@@ -26,18 +26,20 @@ type Coordinator() =
         inbox.Add(event)
 
     member internal __.TakeInbox(time) =
-        if time <> externalTime then
+        if inbox.Count = 0 then
+            ImmutableArray.Empty
+        elif time <> externalTime then
             raise (InvalidOperationException())
-
-        let events = ImmutableArray.CreateRange(inbox)
-        inbox.Clear()
-        events
+        else
+            let events = ImmutableArray.CreateRange(inbox)
+            inbox.Clear()
+            events
 
 [<Sealed>]
-type AtomicModelSimulator(model: BoxedDevsModel.AtomicModel) =
+type AtomicModelSimulator(model: BoxedAtomicModel) =
     inherit Coordinator()
 
-    let mutable state = null
+    let mutable state = model.InitialState
     let mutable lastTime = 0.0
 
     override this.Initialize(initialTime) =
@@ -125,11 +127,11 @@ type CoupledModelSimulator(subcoordinators: ImmutableArray<Coordinator>,
         this.NextTime <- minTime
 
 let create (model: DevsModel) =
-    let rec createFromBoxed (model: BoxedDevsModel.Model) =
-        let createAtomic (model: BoxedDevsModel.AtomicModel) =
+    let rec createFromBoxed (model: BoxedModel) =
+        let createAtomic (model: BoxedAtomicModel) =
             AtomicModelSimulator(model)
 
-        let createCoupled (model: BoxedDevsModel.CoupledModel) =
+        let createCoupled (model: BoxedCoupledModel) =
             let componentCount = model.Components.Count
             let indexTable = Dictionary(componentCount)
             let componentIds = Array.zeroCreate componentCount
@@ -139,7 +141,7 @@ let create (model: DevsModel) =
                 let index = subcoordinatorsBuilder.Count
                 indexTable.Add(id, index)
                 componentIds.[index] <- id
-                subcoordinatorsBuilder.Add(createFromBoxed submodel)
+                subcoordinatorsBuilder.Add(createFromBoxed submodel.Inner)
 
             let convertTranslations (dic: ImmutableDictionary<_, _>) =
                 dic |> Seq.map (fun kvp -> (indexTable.[kvp.Key], kvp.Value))
@@ -160,7 +162,7 @@ let create (model: DevsModel) =
                 convertTranslations model.OutputTranslations)
 
         match model with
-        | BoxedDevsModel.Model.Atomic x -> createAtomic x :> Coordinator
-        | BoxedDevsModel.Model.Coupled x -> createCoupled x :> Coordinator
+        | BoxedModel.Atomic x -> createAtomic x :> Coordinator
+        | BoxedModel.Coupled x -> createCoupled x :> Coordinator
 
     createFromBoxed model.Inner

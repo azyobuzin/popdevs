@@ -23,18 +23,18 @@ module AtomicModel =
 
         let output s = unbox s |> output |> Seq.map box
 
-        let model: BoxedDevsModel.AtomicModel =
+        let model: BoxedAtomicModel =
             { Name = None;
               Transition = transition;
               TimeAdvance = timeAdvance;
               Output = output;
               InitialState = box initialState }
-        AtomicModel<'I, 'O>(BoxedDevsModel.Model.Atomic model)
+        AtomicModel<'I, 'O>(BoxedModel.Atomic model)
 
     let withName name (model: AtomicModel<'I, 'O>) =
         let inner =
             match model.Inner with
-            | BoxedDevsModel.Model.Atomic x ->
-                BoxedDevsModel.Model.Atomic { x with Name = Some name }
+            | BoxedModel.Atomic x ->
+                BoxedModel.Atomic { x with Name = Some name }
             | _ -> raise (ArgumentException("model is not a valid AtomicModel"))
         AtomicModel<'I, 'O>(inner)

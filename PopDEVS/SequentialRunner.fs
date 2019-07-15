@@ -4,10 +4,10 @@ type SequentialRunner internal (model: DevsModel, initialTime: float) =
     let rootCoordinator = SequentialCoordinator.create model
     do rootCoordinator.Initialize(initialTime)
 
-    static member Create(model: DevsModel<NoInput, _>, initialTime: float) =
+    static member Create(model: DevsModel<VoidEvent, _>, initialTime: float) =
         SequentialRunner(model, initialTime)
 
-    static member Create(model: DevsModel<NoInput, _>) =
+    static member Create(model: DevsModel<VoidEvent, _>) =
         SequentialRunner(model, 0.0)
 
     member __.Time = rootCoordinator.NextTime

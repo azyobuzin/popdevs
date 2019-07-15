@@ -14,43 +14,68 @@ type ComponentId internal (v: int64) =
 type ElapsedTime =
     { Completed: bool; Elapsed: float }
 
-module internal BoxedDevsModel =
-    type AtomicModel =
-        { Name: string option;
-          Transition: obj * ElapsedTime * obj seq -> obj;
-          TimeAdvance: obj -> float;
-          Output: obj -> obj seq;
-          InitialState: obj }
+type [<CustomEquality; NoComparison>] internal BoxedAtomicModel =
+    { Name: string option;
+      Transition: obj * ElapsedTime * obj seq -> obj;
+      TimeAdvance: obj -> float;
+      Output: obj -> obj seq;
+      InitialState: obj }
 
-    and CoupledModel =
-        { Name: string option;
-          Components: ImmutableDictionary<ComponentId, Model>;
-          Translations: ImmutableDictionary<ComponentId, ImmutableDictionary<ComponentId, obj -> obj option>>;
-          InputTranslations: ImmutableDictionary<ComponentId, obj -> obj option>;
-          OutputTranslations: ImmutableDictionary<ComponentId, obj -> obj option> }
+    override this.Equals(other) =
+        obj.ReferenceEquals(this, other) ||
+        match other with
+        | :? BoxedAtomicModel as x ->
+            this.Name = x.Name &&
+            (Unchecked.equals this.Transition x.Transition) &&
+            (Unchecked.equals this.TimeAdvance x.TimeAdvance) &&
+            (Unchecked.equals this.Output x.Output) &&
+            this.InitialState = x.InitialState
+        | _ -> false
 
-    and Model =
-        | Atomic of AtomicModel
-        | Coupled of CoupledModel
+    override this.GetHashCode() =
+        ((hash this.Name) * 397) ^^^
+        ((Unchecked.hash this.Transition) * 397) ^^^
+        ((Unchecked.hash this.TimeAdvance) * 397) ^^^
+        ((Unchecked.hash this.Output) * 397) ^^^
+        (hash this.InitialState)
 
-[<AbstractClass>]
-type DevsModel internal (model: BoxedDevsModel.Model) =
+and internal BoxedCoupledModel =
+    { Name: string option;
+      Components: ImmutableDictionary<ComponentId, DevsModel>;
+      Translations: ImmutableDictionary<ComponentId, ImmutableDictionary<ComponentId, obj -> obj option>>;
+      InputTranslations: ImmutableDictionary<ComponentId, obj -> obj option>;
+      OutputTranslations: ImmutableDictionary<ComponentId, obj -> obj option> }
+
+and [<StructuralEquality; NoComparison>] internal BoxedModel =
+    | Atomic of BoxedAtomicModel
+    | Coupled of BoxedCoupledModel
+
+and [<AbstractClass>] DevsModel internal (model: BoxedModel) =
     member __.Name =
         match model with
-        | BoxedDevsModel.Model.Atomic x -> x.Name
-        | BoxedDevsModel.Model.Coupled x -> x.Name
+        | BoxedModel.Atomic x -> x.Name
+        | BoxedModel.Coupled x -> x.Name
 
     member internal __.Inner = model
 
     override this.ToString() =
         let modelType =
             match model with
-            | BoxedDevsModel.Model.Atomic _ -> "AtomicModel"
-            | BoxedDevsModel.Model.Coupled _ -> "CoupledModel"
+            | BoxedModel.Atomic _ -> "AtomicModel"
+            | BoxedModel.Coupled _ -> "CoupledModel"
 
         match this.Name with
         | Some name -> sprintf "%s <%s>" modelType name
         | None -> modelType
+
+    override this.Equals(other) =
+        obj.ReferenceEquals(this, other) ||
+        match other with
+        | :? DevsModel as x -> model.Equals(x.Inner)
+        | _ -> false
+
+    override __.GetHashCode() =
+        model.GetHashCode()
 
 [<AbstractClass>]
 type DevsModel<'I, 'O> internal (model) =
@@ -59,15 +84,15 @@ type DevsModel<'I, 'O> internal (model) =
 module DevsModel =
     let (|Atomic|Coupled|) (model: DevsModel) =
         match model.Inner with
-        | BoxedDevsModel.Model.Atomic _ -> Atomic
-        | BoxedDevsModel.Model.Coupled _ -> Coupled
+        | BoxedModel.Atomic _ -> Atomic
+        | BoxedModel.Coupled _ -> Coupled
 
-[<Struct; CustomEquality; NoComparison>]
 type ComponentReference<'I, 'O> internal (id: ComponentId, model: DevsModel<'I, 'O>) =
     member __.Id = id
     member __.Model = model
 
-    override __.Equals(other) =
+    override this.Equals(other) =
+        obj.ReferenceEquals(this, other) ||
         match other with
         | :? ComponentReference<'I, 'O> as x -> id = x.Id
         | _ -> false
@@ -79,4 +104,4 @@ type ComponentReference<'I, 'O> internal (id: ComponentId, model: DevsModel<'I, 
         sprintf "%O -> %O" id model
 
 [<AbstractClass; Sealed>]
-type NoInput () = class end
+type VoidEvent() = class end

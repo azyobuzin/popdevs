@@ -15,6 +15,7 @@
     <Compile Include="CoupledModel.fs" />
     <Compile Include="SequentialCoordinator.fs" />
     <Compile Include="SequentialRunner.fs" />
+    <Compile Include="EventObserver.fs" />
   </ItemGroup>
 
   <ItemGroup>
