@@ -17,12 +17,9 @@ type SequentialRunner internal (model: DevsModel, initialTime: float) =
         rootCoordinator.AdvanceSimulation(this.Time)
 
     member this.RunUntil(time: float) =
+        Simulation.setContext this
         while this.Time < time do
-            this.Step()
-
-    member this.Run() =
-        while this.Time < infinity do
-            this.Step()
+            rootCoordinator.AdvanceSimulation(this.Time)
 
     interface ISimulationContext with
         member this.GetTime() = this.Time
