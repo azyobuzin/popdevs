@@ -118,13 +118,11 @@ type CoupledModelSimulator(subcoordinators: ImmutableArray<Coordinator>,
         deliverExternalInputs ()
         collectImminents ()
 
-        let mutable minTime = infinity
         for coordinatorIndex in synchronizeSet do
             let coordinator = subcoordinators.[coordinatorIndex]
             coordinator.AdvanceSimulation(time)
-            minTime <- min minTime coordinator.NextTime
 
-        this.NextTime <- minTime
+        this.NextTime <- subcoordinators |> Seq.map (fun c -> c.NextTime) |> Seq.min
 
 let create (model: DevsModel) =
     let rec createFromBoxed (model: BoxedModel) =
