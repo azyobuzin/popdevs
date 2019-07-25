@@ -16,7 +16,7 @@ type ElapsedTime =
 
 type [<CustomEquality; NoComparison>] internal BoxedAtomicModel =
     { Name: string option;
-      Transition: obj * ElapsedTime * obj seq -> obj;
+      Transition: obj * ElapsedTime * IInputEventBuffer -> obj;
       TimeAdvance: obj -> float;
       Output: obj -> obj seq;
       InitialState: obj }

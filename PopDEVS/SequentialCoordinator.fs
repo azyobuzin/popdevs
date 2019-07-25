@@ -1,39 +1,42 @@
 module internal PopDEVS.SequentialCoordinator
 
-open System
 open System.Collections.Generic
 open System.Collections.Immutable
 
+type InputEventBufferImpl() =
+    let events = LinkedList<ReceivedEvent<obj>>()
+
+    member __.IsEmpty =
+        events.Count = 0
+
+    member this.Add(event: obj, time: float) =
+        if not this.IsEmpty && events.Last.Value.Time > time then
+            invalidOp "Cannot add an event older than the last event."
+
+        events.AddLast({ Time = time; Event = event }) |> ignore
+
+    interface IInputEventBuffer with
+        member __.Take(chooser) =
+            let resultBuilder = ImmutableArray.CreateBuilder()
+            let mutable node = events.First
+            while not (isNull node) do
+                let nextNode = node.Next
+                match chooser node.Value with
+                | Some x ->
+                    resultBuilder.Add(x)
+                    events.Remove(node)
+                | None -> ()
+                node <- nextNode
+            resultBuilder.ToImmutable()
+
 [<AbstractClass>]
 type Coordinator() =
-    let mutable externalTime = 0.0
-    let inbox = List<obj>()
-
     member val NextTime = 0.0 with get, set
-    member internal __.ExternalTime = externalTime
 
     abstract member Initialize : initialTime: float -> unit
     abstract member CollectOutputs : time: float -> obj seq
+    abstract member Inbox : event: obj * time: float -> unit
     abstract member AdvanceSimulation : time: float -> unit
-
-    member this.Inbox(event: obj, time: float) =
-        if inbox.Count = 0 then
-            assert (time <= this.NextTime)
-            externalTime <- time
-        else
-            assert (time = externalTime)
-
-        inbox.Add(event)
-
-    member internal __.TakeInbox(time) =
-        if inbox.Count = 0 then
-            ImmutableArray.Empty
-        elif time <> externalTime then
-            raise (InvalidOperationException())
-        else
-            let events = ImmutableArray.CreateRange(inbox)
-            inbox.Clear()
-            events
 
 [<Sealed>]
 type AtomicModelSimulator(model: BoxedAtomicModel) =
@@ -41,6 +44,8 @@ type AtomicModelSimulator(model: BoxedAtomicModel) =
 
     let mutable state = model.InitialState
     let mutable lastTime = 0.0
+    let mutable externalTime = None
+    let inputBuf = InputEventBufferImpl()
 
     override this.Initialize(initialTime) =
         lastTime <- initialTime
@@ -54,12 +59,24 @@ type AtomicModelSimulator(model: BoxedAtomicModel) =
         else
             Seq.empty
 
+    override this.Inbox(event, time) =
+        match externalTime with
+        | Some x -> assert (time = x)
+        | None ->
+            assert (time >= lastTime && time <= this.NextTime)
+            externalTime <- Some time
+
+        inputBuf.Add(event, time)
+
     override this.AdvanceSimulation(time) =
-        let inbox = this.TakeInbox(time)
-        assert (time = this.NextTime || (inbox.Length > 0 && this.ExternalTime = time))
+        match externalTime with
+        | Some x ->
+            assert (time = x)
+            externalTime <- None
+        | None -> assert (time >= lastTime && time <= this.NextTime)
 
         let elapsed = { Completed = time = this.NextTime; Elapsed = time - this.NextTime }
-        state <- model.Transition (state, elapsed, inbox :> obj seq)
+        state <- model.Transition (state, elapsed, inputBuf :> IInputEventBuffer)
         lastTime <- time
         this.NextTime <- time + model.TimeAdvance state
 
@@ -71,6 +88,8 @@ type CoupledModelSimulator(subcoordinators: ImmutableArray<Coordinator>,
     inherit Coordinator()
 
     let mutable lastTime = 0.0
+    let mutable externalTime = 0.0
+    let inbox = List<obj>()
 
     override this.Initialize(initialTime) =
         lastTime <- initialTime
@@ -87,9 +106,19 @@ type CoupledModelSimulator(subcoordinators: ImmutableArray<Coordinator>,
             subcoordinators.[index].CollectOutputs(time)
             |> Seq.choose transFunc)
 
+    override this.Inbox(event: obj, time: float) =
+        if inbox.Count = 0 then
+            assert (time <= this.NextTime)
+            externalTime <- time
+        else
+            assert (time = externalTime)
+
+        inbox.Add(event)
+
     override this.AdvanceSimulation(time) =
         assert (time >= lastTime && time <= this.NextTime)
 
+        /// シミュレーションを進められる Coordinator のインデックス
         let synchronizeSet = HashSet()
 
         let deliverInputs (tran: (int * (obj -> obj option)) seq) events =
@@ -104,7 +133,15 @@ type CoupledModelSimulator(subcoordinators: ImmutableArray<Coordinator>,
             |> Seq.iter deliver
 
         let deliverExternalInputs () =
-            deliverInputs inputTranslations (this.TakeInbox(time))
+            let inboxEvents =
+                if inbox.Count = 0 then
+                    Array.empty
+                else
+                    assert (time = externalTime)
+                    let inboxEvents = inbox.ToArray()
+                    inbox.Clear()
+                    inboxEvents
+            deliverInputs inputTranslations inboxEvents
 
         let collectImminents () =
             let imminentSubcoordinators =

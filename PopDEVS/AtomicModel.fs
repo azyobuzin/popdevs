@@ -1,24 +1,24 @@
 namespace PopDEVS
 
-open System
 open System.Collections.Immutable
 
 type AtomicModel<'I, 'O> internal (model) =
     inherit DevsModel<'I, 'O>(model)
 
 module AtomicModel =
-    let create (transition: 'S * ElapsedTime * InputEventBag<'I> -> 'S,
+    [<CompiledName("Create")>]
+    let create (transition: 'S * ElapsedTime * InputEventBuffer<'I> -> 'S,
                 timeAdvance: 'S -> float,
                 output: 'S -> 'O seq)
                (initialState: 'S) =
         let transition (s, e, i) =
-            let inputBag = InputEventBag(ImmutableArray.CreateRange(Seq.map unbox i))
-            transition (unbox s, e, inputBag) |> box
+            let inputBuf = InputEventBuffer(i)
+            transition (unbox s, e, inputBuf) |> box
 
         let timeAdvance s =
             let ta = unbox s |> timeAdvance
             if ta < 0.0 then
-                raise (InvalidOperationException("timeAdvance returned a negative number."))
+                invalidOp "timeAdvance returned a negative number."
             ta
 
         let output s = unbox s |> output |> Seq.map box
@@ -31,10 +31,11 @@ module AtomicModel =
               InitialState = box initialState }
         AtomicModel<'I, 'O>(BoxedModel.Atomic model)
 
+    [<CompiledName("WithName")>]
     let withName name (model: AtomicModel<'I, 'O>) =
         let inner =
             match model.Inner with
             | BoxedModel.Atomic x ->
                 BoxedModel.Atomic { x with Name = Some name }
-            | _ -> raise (ArgumentException("model is not a valid AtomicModel"))
+            | _ -> invalidArg "model" "model is not a valid AtomicModel"
         AtomicModel<'I, 'O>(inner)

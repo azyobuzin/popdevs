@@ -9,7 +9,7 @@ module internal CoupledModelHelper =
     let getInner (model: DevsModel) =
         match model.Inner with
         | BoxedModel.Coupled x -> x
-        | _ -> raise (ArgumentException("The speficied model is not a valid CoupledModel"))
+        | _ -> invalidArg "model" "The speficied model is not a valid CoupledModel"
 
 type CoupledModel<'I, 'O> internal (model) =
     inherit DevsModel<'I, 'O>(model)
@@ -33,7 +33,8 @@ type CoupledModel<'I, 'O> internal (model) =
     member this.GetExternalOutputComponents() =
         (CoupledModelHelper.getInner this).OutputTranslations.Keys
 
-    static member val Empty =
+    [<CompiledName("Empty")>]
+    static member val empty =
         let model: BoxedCoupledModel =
             { Name = None;
               Components = ImmutableDictionary.Empty;
@@ -49,7 +50,7 @@ type CoupledModelBuilder<'I, 'O> internal
 
     let validateComponent (paramName: string) target =
         if not (components.ContainsKey(target)) then
-            raise (ArgumentException("The specified ComponentReference is not a component of the coupled model.", paramName))
+            invalidArg paramName "The specified ComponentReference is not a component of the coupled model."
 
     let boxedTransFunc transFunc event = transFunc (unbox event) |> Option.map box
 
@@ -142,9 +143,11 @@ module CoupledModel =
         let updatedInner = f (CoupledModelHelper.getInner model)
         CoupledModel<'I, 'O>(BoxedModel.Coupled updatedInner)
 
+    [<CompiledName("WithName")>]
     let withName name model =
         updateModel (fun x -> { x with Name = Some name }) model
 
+    [<CompiledName("ToBuilder")>]
     let toBuilder (model: CoupledModel<'I, 'O>) =
         let inner = CoupledModelHelper.getInner model
         CoupledModelBuilder<'I, 'O>(

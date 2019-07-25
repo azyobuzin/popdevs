@@ -1,7 +1,5 @@
 module PopDEVS.EventObserver
 
-open System
-
 type ObservedEvent<'a> =
     { ComponentId: ComponentId;
       Model: DevsModel;
@@ -13,11 +11,11 @@ type ObserverReference<'a> = ComponentReference<ObservedEvent<'a>, VoidEvent>
 
 /// <summary>イベントが入力されると <paramref name="onEvent"/> を呼び出す <see cref="AtomicModel{I,O}"/> を作成します。</summary>
 let createObserverModel (onEvent: ObservedEvent<'a> -> unit) : ObserverModel<'a> =
-    let transition ((), _, inputBag: InputEventBag<ObservedEvent<'a>>) =
-        let time = Simulation.time ()
+    let transition ((), _, inputBuf) =
         Simulation.io (fun () ->
-            inputBag.Events
-            |> Seq.map (fun oe -> { oe with Time = time })
+            inputBuf
+            |> InputEventBuffer.take (fun re -> Some {
+                re.Event with ObservedEvent.Time = re.Time })
             |> Seq.iter onEvent)
     let timeAdvance () = infinity
     let output () = Seq.empty<VoidEvent>
@@ -42,7 +40,7 @@ let connectBoxed (coupledModel: CoupledModelBuilder<_, _>)
     let model =
         match coupledModel.Components.TryFind(observee) with
         | Some x -> x
-        | None -> raise (ArgumentException("observee is not a component of the coupled model."))
+        | None -> invalidArg "observee" "observee is not a component of the coupled model."
     coupledModel.Connect(
         observee, observer,
         (fun event -> Some {
