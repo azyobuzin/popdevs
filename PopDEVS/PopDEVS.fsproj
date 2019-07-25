@@ -8,14 +8,15 @@
   <ItemGroup>
     <Compile Include="ImmutableCollection.fs" />
     <Compile Include="InputEventBuffer.fs" />
-    <Compile Include="ISimulationContext.fs" />
-    <Compile Include="Simulation.fs" />
-    <Compile Include="DevsModel.fs" />
-    <Compile Include="AtomicModel.fs" />
-    <Compile Include="CoupledModel.fs" />
-    <Compile Include="SequentialCoordinator.fs" />
-    <Compile Include="SequentialRunner.fs" />
+    <Compile Include="SimEnv.fs" />
+    <Compile Include="DevsModel\DevsModel.fs" />
+    <Compile Include="DevsModel\AtomicModel.fs" />
+    <Compile Include="DevsModel\CoupledModel.fs" />
     <Compile Include="EventObserver.fs" />
+    <Compile Include="Sequential\Coordinator.fs" />
+    <Compile Include="Sequential\SequentialRunner.fs" />
+    <Compile Include="ProcessOriented\WaitCondition.fs" />
+    <Compile Include="ProcessOriented\ProcessEnv.fs" />
   </ItemGroup>
 
   <ItemGroup>

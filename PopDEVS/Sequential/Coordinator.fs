@@ -1,9 +1,10 @@
-module internal PopDEVS.SequentialCoordinator
+module internal PopDEVS.Sequential.Coordinator
 
 open System.Collections.Generic
 open System.Collections.Immutable
+open PopDEVS
 
-type InputEventBufferImpl() =
+type private InputEventBufferImpl() =
     let events = LinkedList<ReceivedEvent<obj>>()
 
     member __.IsEmpty =
@@ -16,10 +17,17 @@ type InputEventBufferImpl() =
         events.AddLast({ Time = time; Event = event }) |> ignore
 
     interface IInputEventBuffer with
-        member __.Take(chooser) =
+        member __.Take(chooser, limit) =
             let resultBuilder = ImmutableArray.CreateBuilder()
+
+            /// Returns true if the number of the results is less than limit
+            let limitTest () =
+                match limit with
+                | Some x -> resultBuilder.Count < x
+                | None -> true
+
             let mutable node = events.First
-            while not (isNull node) do
+            while (not (isNull node)) && (limitTest ()) do
                 let nextNode = node.Next
                 match chooser node.Value with
                 | Some x ->
@@ -28,6 +36,14 @@ type InputEventBufferImpl() =
                 | None -> ()
                 node <- nextNode
             resultBuilder.ToImmutable()
+
+type private SimEnvImpl(time: float) =
+    interface ISimEnv with
+        member __.GetTime() =
+            time
+
+        member __.RunIO(action) =
+            action ()
 
 [<AbstractClass>]
 type Coordinator() =
@@ -75,8 +91,9 @@ type AtomicModelSimulator(model: BoxedAtomicModel) =
             externalTime <- None
         | None -> assert (time >= lastTime && time <= this.NextTime)
 
+        let env = SimEnvImpl(time) :> ISimEnv
         let elapsed = { Completed = time = this.NextTime; Elapsed = time - this.NextTime }
-        state <- model.Transition (state, elapsed, inputBuf :> IInputEventBuffer)
+        state <- model.Transition (state, env, elapsed, inputBuf :> IInputEventBuffer)
         lastTime <- time
         this.NextTime <- time + model.TimeAdvance state
 
@@ -121,6 +138,7 @@ type CoupledModelSimulator(subcoordinators: ImmutableArray<Coordinator>,
         /// シミュレーションを進められる Coordinator のインデックス
         let synchronizeSet = HashSet()
 
+        /// イベントを配送し、配送先モデルを synchronizeSet に追加する
         let deliverInputs (tran: (int * (obj -> obj option)) seq) events =
             let translate event (destIndex, transFunc) =
                 transFunc event
@@ -132,6 +150,7 @@ type CoupledModelSimulator(subcoordinators: ImmutableArray<Coordinator>,
             |> Seq.collect (fun event -> tran |> Seq.choose (translate event))
             |> Seq.iter deliver
 
+        /// Coupled モデルに入力されたイベントを配送する
         let deliverExternalInputs () =
             let inboxEvents =
                 if inbox.Count = 0 then
@@ -143,7 +162,9 @@ type CoupledModelSimulator(subcoordinators: ImmutableArray<Coordinator>,
                     inboxEvents
             deliverInputs inputTranslations inboxEvents
 
+        /// timeAdvance が完了したモデルの出力を、接続先モデルに配送する
         let collectImminents () =
+            // TODO: Future Event List の管理
             let imminentSubcoordinators =
                 subcoordinators
                 |> Seq.indexed

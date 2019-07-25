@@ -5,72 +5,74 @@ open System.Collections.Immutable
 type ReceivedEvent<'a> =
     { Time: float; Event: 'a }
 
+    static member getTime (re: ReceivedEvent<'a>) =
+        re.Time
+
+    static member getEvent (re: ReceivedEvent<'a>) =
+        re.Event
+
 type internal IInputEventBuffer =
-    abstract Take : chooser: (ReceivedEvent<obj> -> 'a option) -> ImmutableArray<'a>
+    abstract Take : chooser: (ReceivedEvent<obj> -> 'a option) * limit: int option -> ImmutableArray<'a>
 
 type InputEventBuffer<'a> internal (impl: IInputEventBuffer) =
     static let unboxEvent (re: ReceivedEvent<obj>) =
         { Time = re.Time; Event = unbox re.Event }
 
-    member __.Take(chooser: ReceivedEvent<'a> -> 'b option) =
-        impl.Take(fun x -> unboxEvent x |> chooser)
-
-    member __.Take(filter: ReceivedEvent<'a> -> bool) =
-        impl.Take(fun x ->
-            let x = unboxEvent x
-            if filter x then Some x else None)
-
-    member __.TakeAll() : ImmutableArray<ReceivedEvent<'a>> =
-        impl.Take(fun x -> Some (unboxEvent x))
-
-    member __.TakeEvents(chooser: 'a -> 'b option) =
-        impl.Take(fun x -> unbox x.Event |> chooser)
-
-    member __.TakeEvents(filter: 'a -> bool) =
-        impl.Take(fun x ->
-            let ev = unbox x.Event
-            if filter ev then Some ev else None)
-
-    member __.TakeAllEvents() : ImmutableArray<'a> =
-        impl.Take(fun x -> Some (unbox x.Event))
+    member __.Take(chooser: ReceivedEvent<'a> -> 'b option, limit: int option) =
+        impl.Take((fun x -> unboxEvent x |> chooser), limit)
 
 module InputEventBuffer =
     /// <summary>入力イベントバッファーから、条件を満たすイベントを取り出します。</summary>
     /// <param name="chooser">条件を指定します。この関数で、シミュレーションの状態を変化させる副作用を起こしてはいけません。</param>
     /// <returns>条件を満たすイベントの配列。受信時刻の昇順にソートされています。同時刻のイベントについては、順番は保証されていません。</returns>
     [<CompiledName("Take")>]
-    let take (chooser: _ -> 'b option) (inputBuf: InputEventBuffer<'a>) =
-        inputBuf.Take(chooser)
+    let take chooser (inputBuf: InputEventBuffer<_>) =
+        inputBuf.Take(chooser, None)
 
     /// <summary>入力イベントバッファーから、条件を満たすイベントを取り出します。</summary>
     /// <param name="filter">条件を指定します。この関数で、シミュレーションの状態を変化させる副作用を起こしてはいけません。</param>
     /// <returns>条件を満たすイベントの配列。受信時刻の昇順にソートされています。同時刻のイベントについては、順番は保証されていません。</returns>
     [<CompiledName("TakeWithFilter")>]
-    let takeWithFilter (filter: _ -> bool) (inputBuf: InputEventBuffer<'a>) =
-        inputBuf.Take(filter)
+    let takeWithFilter filter (inputBuf: InputEventBuffer<_>) =
+        take (fun x -> if filter x then Some x else None) inputBuf
 
-    /// <summary>入力イベントバッファーにある、すべてのイベントを取り出します。</summary>
+    /// <summary>入力イベントバッファーにあるイベントを最大 <paramref name="limit"/> 件取り出します。</summary>
+    /// <param name="limit">取り出す最大件数を指定します。 <c>None</c> のとき、すべてのイベントを取り出します。</param>
     /// <returns>イベントの配列。受信時刻の昇順にソートされています。同時刻のイベントについては、順番は保証されていません。</returns>
     [<CompiledName("TakeAll")>]
-    let takeAll (inputBuf: InputEventBuffer<'a>) =
-        inputBuf.TakeAll()
+    let takeAll limit (inputBuf: InputEventBuffer<_>) =
+        inputBuf.Take((fun x -> Some x), limit)
 
     /// <summary>入力イベントバッファーから、条件を満たすイベントを、時刻を無視して取り出します。</summary>
-    /// <param name="chooser">条件を指定します。この関数で、シミュレーションの状態を変化させる副作用を起こしてはいけません。</param>
-    /// <returns>条件を満たすイベントの配列。受信時刻の昇順にソートされています。同時刻のイベントについては、順番は保証されていません。</returns>
-    [<CompiledName("TakeEvents")>]
-    let takeEvents (chooser: _ -> 'b option) (inputBuf: InputEventBuffer<'a>) =
-        inputBuf.TakeEvents(chooser)
-
-    /// <summary>入力イベントバッファーから、条件を満たすイベントを、時刻を無視して取り出します。</summary>
-    /// <param name="chooser">条件を指定します。この関数で、シミュレーションの状態を変化させる副作用を起こしてはいけません。</param>
+    /// <param name="filter">条件を指定します。この関数で、シミュレーションの状態を変化させる副作用を起こしてはいけません。</param>
     /// <returns>条件を満たすイベントの配列。受信時刻の昇順にソートされています。同時刻のイベントについては、順番は保証されていません。</returns>
     [<CompiledName("TakeEventsWithFilter")>]
-    let takeEventsWithFilter (filter: _ -> bool) (inputBuf: InputEventBuffer<'a>) =
-        inputBuf.TakeEvents(filter)
+    let takeEventsWithFilter filter (inputBuf: InputEventBuffer<_>) =
+        let chooser re =
+            let ev = re.Event
+            if filter ev then Some ev else None
+        take chooser inputBuf
 
-    /// <summary>入力イベントバッファーにある、すべてのイベントを取り出します。</summary>
-    /// <returns>イベントの配列。受信時刻の昇順にソートされています。同時刻のイベントについては、順番は保証されていません。</returns>
-    [<CompiledName("TakeAllEvents")>]
-    let takeAllEvents (inputBuf: InputEventBuffer<'a>) =
-        inputBuf.TakeAllEvents()
+    /// <summary>入力イベントバッファーから、条件を満たすイベントを、最大 <paramref name="limit"/> 件取り出します。</summary>
+    /// <param name="chooser">条件を指定します。この関数で、シミュレーションの状態を変化させる副作用を起こしてはいけません。</param>
+    /// <returns>条件を満たすイベントの配列。受信時刻の昇順にソートされています。同時刻のイベントについては、順番は保証されていません。</returns>
+    [<CompiledName("TakeWithLimit")>]
+    let takeWithLimit chooser limit (inputBuf: InputEventBuffer<_>) =
+        inputBuf.Take(chooser, Some limit)
+
+    /// <summary>入力イベントバッファーから、条件を満たすイベントを、最大 <paramref name="limit"/> 件取り出します。</summary>
+    /// <param name="filter">条件を指定します。この関数で、シミュレーションの状態を変化させる副作用を起こしてはいけません。</param>
+    /// <returns>条件を満たすイベントの配列。受信時刻の昇順にソートされています。同時刻のイベントについては、順番は保証されていません。</returns>
+    [<CompiledName("TakeWithFilterAndLimit")>]
+    let takeWithFilterAndLimit filter limit (inputBuf: InputEventBuffer<_>) =
+        takeWithLimit (fun x -> if filter x then Some x else None) limit inputBuf
+
+    /// <summary>入力イベントバッファーから、条件を満たすイベントを、時刻を無視して、最大 <paramref name="limit"/> 件取り出します。</summary>
+    /// <param name="filter">条件を指定します。この関数で、シミュレーションの状態を変化させる副作用を起こしてはいけません。</param>
+    /// <returns>条件を満たすイベントの配列。受信時刻の昇順にソートされています。同時刻のイベントについては、順番は保証されていません。</returns>
+    [<CompiledName("TakeEventsWithFilterAndLimit")>]
+    let takeEventsWithFilterAndLimit filter limit (inputBuf: InputEventBuffer<_>) =
+        let chooser re =
+            let ev = re.Event
+            if filter ev then Some ev else None
+        takeWithLimit chooser limit inputBuf

@@ -1,19 +1,17 @@
 namespace PopDEVS
 
-open System.Collections.Immutable
-
 type AtomicModel<'I, 'O> internal (model) =
     inherit DevsModel<'I, 'O>(model)
 
 module AtomicModel =
     [<CompiledName("Create")>]
-    let create (transition: 'S * ElapsedTime * InputEventBuffer<'I> -> 'S,
+    let create (transition: 'S * ISimEnv * ElapsedTime * InputEventBuffer<'I> -> 'S,
                 timeAdvance: 'S -> float,
                 output: 'S -> 'O seq)
                (initialState: 'S) =
-        let transition (s, e, i) =
-            let inputBuf = InputEventBuffer(i)
-            transition (unbox s, e, inputBuf) |> box
+        let transition (state, env, elapsed, inputBuf) =
+            let inputBuf = InputEventBuffer(inputBuf)
+            transition (unbox state, env, elapsed, inputBuf) |> box
 
         let timeAdvance s =
             let ta = unbox s |> timeAdvance
