@@ -5,10 +5,6 @@ open PopDEVS
 type internal PollFunc<'Input, 'Result> =
     obj * ISimEnv * ElapsedTime * InputEventBuffer<'Input> -> 'Result option
 
-[<AbstractClass>]
-type internal InternalWaitCondition<'Input, 'Result>() =
-    abstract member Poll : obj * ISimEnv * ElapsedTime * InputEventBuffer<'Input> -> 'Result option
-
 type WaitCondition<'Input, 'Result> internal (poll: PollFunc<'Input, 'Result>) =
     member internal __.Poll(args) =
         poll args
@@ -46,4 +42,4 @@ module internal WaitCondition =
             match events.Length with
             | 0 -> None
             | 1 -> Some events.[0]
-            | _ -> invalidOp "takeWithLimit returns more than 1 events."
+            | _ -> failwith "takeWithLimit returns more than 1 events."
