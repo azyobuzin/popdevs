@@ -3,7 +3,7 @@ namespace PopDEVS.ProcessOriented
 open PopDEVS
 
 type ProcessEnv<'I, 'O> internal (innerEnv: ISimEnv) =
-    member private __.InnerEnv = innerEnv
+    member private __.InnerEnv = innerEnv // SimEnv は transition で渡ってくるから、ここだと都合悪い
 
     [<CompiledName("GetTime")>]
     static member getTime (env: ProcessEnv<'I, 'O>) =
