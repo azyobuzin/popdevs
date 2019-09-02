@@ -17,8 +17,8 @@
     <Compile Include="Sequential\SequentialRunner.fs" />
     <Compile Include="ProcessOriented\WaitCondition.fs" />
     <Compile Include="ProcessOriented\ProcessEnv.fs" />
+    <Compile Include="ProcessOriented\ProcessModelBuilderImpl.fs" />
     <Compile Include="ProcessOriented\ProcessModel.fs" />
-    <Compile Include="ProcessOriented\ProcessModelBuilder.fs" />
   </ItemGroup>
 
   <ItemGroup>
