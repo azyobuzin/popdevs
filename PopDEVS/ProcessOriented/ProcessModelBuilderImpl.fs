@@ -1,6 +1,7 @@
 module PopDEVS.ProcessOriented.ProcessModelBuilderImpl
 
 open System
+open System.Collections.Generic
 open System.Collections.Immutable
 open FSharp.Quotations
 
@@ -10,7 +11,6 @@ type internal FsVar = FSharp.Quotations.Var
 
 type Placeholder<'I, 'O, 'V> = struct end
 
-(*
 [<ReferenceEquality>]
 type internal StateVar =
     { Type: Type
@@ -35,7 +35,12 @@ and [<ReferenceEquality>] internal CfgNode =
     | Block of ControlFlowNode
     | Event of EventNode
     | Exit
-*)
+
+type internal CfgEnv() =
+    /// 外部からキャプチャした変数
+    let capturedVariables = Dictionary<string, StateVar>()
+    /// コンピュテーション式内で定義された変数
+    let variables = Dictionary<FsVar, StateVar>()
 
 type internal BuilderResultInner =
     | Expr of FsExpr
