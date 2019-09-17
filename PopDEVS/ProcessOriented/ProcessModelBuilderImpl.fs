@@ -56,6 +56,10 @@ type internal NodeBehavior =
     /// WaitCondition を返す
     | WaitCondition
 
+type internal NodeOrExpr =
+    | Node of (CfgNode * CfgNode)
+    | Expr of FsExpr
+
 let internal newNode (expr, returnsWaitCondition) =
     { Expr = expr
       Edges = List<CfgNode>()
@@ -71,14 +75,7 @@ let internal newEnv () =
     { CapturedVariables = new Dictionary<string, StateVar>()
       Variables = new Dictionary<FsVar, StateVar>() }
 
-type internal BuilderTree =
-    | Expr of FsExpr
-    | Bind of FsExpr * BuilderTree
-    | Combine of BuilderTree * BuilderTree
-    | While of FsExpr * BuilderTree
-
-type BuilderResult<'I, 'O> internal (inner: BuilderTree) =
-    member internal __.Inner = inner
+type BuilderResult<'I, 'O> internal () = class end
 
 type Builder<'I, 'O>() =
     let doNotCall () =
@@ -130,49 +127,10 @@ type Builder<'I, 'O>() =
         let addVar (var: FsVar) =
             env.Variables.Add(var, newVar (var.Name, var.Type))
 
-        (*
-        let isLambda x =
-            match x with
-            | Patterns.Lambda _ -> true
-            | _ -> false
-
-        let rec toBuilderTree = function
-            | DerivedPatterns.SpecificCall <@@ this.Delay @@>
-                (_, _, [generator]) ->
-                match generator with
-                | Patterns.Lambda (_, body) -> toBuilderTree body
-                | x -> failwith "The argument of the Delay call is not a lambda."
-            | DerivedPatterns.SpecificCall <@@ this.Bind @@>
-                (_, _, [arg1; arg2]) ->
-                if not (isLambda arg2) then
-                    failwith "The second argument of the Bind call is not a lambda."
-                BuilderTree.Bind (arg1, toBuilderTree arg2)
-            | DerivedPatterns.SpecificCall <@@ this.Combine @@>
-                (_, _, [arg1; arg2]) ->
-                BuilderTree.Combine (toBuilderTree arg1, toBuilderTree arg2)
-            | DerivedPatterns.SpecificCall <@@ this.While @@>
-                (_, _, [arg1; arg2]) ->
-                if not (isLambda arg1) then
-                    failwith "The first argument of the While call is not a lambda."
-                BuilderTree.While (arg1, toBuilderTree arg2)
-            | Patterns.Call (Some (Patterns.Value (receiver, _)), method, _)
-                when obj.ReferenceEquals(receiver, this) ->
-                failwithf "Do not call '%s'." method.Name
-            | Patterns.Sequential (left, right) as expr ->
-                let left = toBuilderTree left
-                let right = toBuilderTree right
-                match left, right with
-                | BuilderTree.Expr _, BuilderTree.Expr _ ->
-                    BuilderTree.Expr expr
-                | left, right -> BuilderTree.Combine (left, right)
-            | expr -> BuilderTree.Expr expr
-
-        let tree = toBuilderTree expr
-        *)
-
         let connect (left, right) = left.Edges.Add(right)
 
         let oneWay = <@ 0, None @>
+        let boxExpr expr = FsExpr.Cast<obj>(FsExpr.Coerce(expr, typeof<obj>))
 
         /// 条件を実行し、 false なら 0 番目、 true なら 1 番目の辺に進むノードを作成する
         let condToNode cond =
@@ -188,20 +146,49 @@ type Builder<'I, 'O>() =
             if ty.FullName <> "PopDEVS.ProcessOriented.WaitCondition`2" then
                 failwith "The type of the expression is not WaitCondition<'I, 'R>."
 
-        /// <param name="varToAssign">expr の式の値を代入する変数</param>
-        // TODO: CfgNode or Expr が返ってこないとうまくいかない？
+        let exprToNode (expr, kind) =
+            match kind with
+            | Unit ->
+                // fun _ ->
+                //     expr
+                //     0, None
+                let lambda = FsExpr.Lambda(FsVar("_", typeof<obj>), FsExpr.Sequential(expr, oneWay))
+                let node = newNode (lambda, false)
+                node
+            | Assign var ->
+                // fun _ ->
+                //     var <- expr
+                //     0, None
+                let lambda =
+                    FsExpr.Lambda(
+                        FsVar("_", typeof<obj>),
+                        FsExpr.Sequential(
+                            FsExpr.VarSet(var, expr),
+                            oneWay))
+                let node = newNode (lambda, false)
+                node
+            | WaitCondition ->
+                let node = newNode (<@ fun _ -> 0, Some %(boxExpr expr) @>, true)
+                node
+
         let rec createCfg (expr, kind) =
+            match createCfgOrExpr (expr, kind) with
+            | Node nodes -> nodes
+            | Expr expr ->
+                // createCfgOrExpr が Expr を返してきたなら、 CfgNode に変換
+                let node = exprToNode (expr, kind)
+                node, node
+
+        and createCfgOrExpr (expr, kind) : NodeOrExpr =
             match expr with
             // Builder のメソッド呼び出し
 
-            | DerivedPatterns.SpecificCall <@@ this.Delay @@>
-                (_, _, [generator]) ->
+            | DerivedPatterns.SpecificCall <@@ this.Delay @@> (_, _, [generator]) ->
                 match generator with
-                | Patterns.Lambda (_, body) -> createCfg (body, kind)
+                | Patterns.Lambda (_, body) -> createCfgOrExpr (body, kind)
                 | _ -> failwith "The argument of the Delay call is not a lambda."
 
-            | DerivedPatterns.SpecificCall <@@ this.Bind @@>
-                (_, _, [arg1; arg2]) ->
+            | DerivedPatterns.SpecificCall <@@ this.Bind @@> (_, _, [arg1; arg2]) ->
                 // WaitCondition<'Input, 'Result> の 'Result を取得
                 let waitResultType = arg1.Type.GetGenericArguments().[1]
 
@@ -209,35 +196,69 @@ type Builder<'I, 'O>() =
                 let leftFirst, leftLast = createCfg (arg1, WaitCondition)
 
                 match arg2 with
-                | Patterns.Lambda (var, body) ->
-                    addVar var
+                | Patterns.Lambda (resultVar, body) ->
+                    addVar resultVar
 
-                    let assignNode =
-                        // fun waitResult ->
-                        //     var <- waitResult
-                        //     0, None
-                        let funcParam = FsVar("waitResult", typeof<obj>)
-                        let assignExpr = FsExpr.VarSet(var, FsExpr.Coerce(FsExpr.Var(funcParam), waitResultType))
-                        let assignLambda = FsExpr.Lambda(funcParam, FsExpr.Sequential(assignExpr, oneWay))
-                        newNode (assignLambda, false)
-                    connect (leftLast, assignNode)
+                    let funcParam = FsVar("waitResult", typeof<obj>)
+                    let assignExpr = FsExpr.VarSet(resultVar, FsExpr.Coerce(FsExpr.Var(funcParam), waitResultType))
 
-                    let rightFirst, rightLast = createCfg (body, kind)
-                    connect (assignNode, rightFirst)
+                    match createCfgOrExpr (body, kind) with
+                    | Node (rightFirst, rightLast) ->
+                        let assignNode =
+                            // fun waitResult ->
+                            //     resultVar <- waitResult
+                            //     0, None
+                            let assignLambda = FsExpr.Lambda(funcParam, FsExpr.Sequential(assignExpr, oneWay))
+                            newNode (assignLambda, false)
+                        connect (leftLast, assignNode)
+                        connect (assignNode, rightFirst)
+                        Node (leftFirst, rightLast)
 
-                    leftFirst, rightLast
+                    | Expr bodyExpr ->
+                        let nodeExpr, returnsWaitCondition =
+                            match kind with
+                            | Unit ->
+                                // fun waitResult ->
+                                //     resultVar <- waitResult
+                                //     bodyExpr
+                                //     0, None
+                                let e =
+                                    FsExpr.Sequential(
+                                        FsExpr.Sequential(assignExpr, bodyExpr),
+                                        oneWay)
+                                e, false
+                            | Assign varToAssign ->
+                                // fun waitResult ->
+                                //     resultVar <- waitResult
+                                //     varToAssign <- bodyExpr
+                                //     0, None
+                                let e =
+                                    FsExpr.Sequential(
+                                        FsExpr.Sequential(
+                                            assignExpr,
+                                            FsExpr.VarSet(varToAssign, bodyExpr)),
+                                        oneWay)
+                                e, false
+                            | WaitCondition ->
+                                // fun waitResult ->
+                                //     resultVar <- waitResult
+                                //     0, Some bodyExpr
+                                let e =
+                                    FsExpr.Sequential(
+                                        assignExpr,
+                                        <@ 0, Some %(boxExpr bodyExpr) @>)
+                                e, true
+                        let lambda = FsExpr.Lambda(funcParam, nodeExpr)
+                        let rightNode = newNode (lambda, returnsWaitCondition)
+                        connect (leftLast, rightNode)
+                        Node (leftLast, rightNode)
 
                 | _ -> failwith "The second argument of the Bind call is not a lambda."
 
-            | DerivedPatterns.SpecificCall <@@ this.Combine @@>
-                (_, _, [arg1; arg2]) ->
-                let leftFirst, leftLast = createCfg (arg1, Unit)
-                let rightFirst, rightLast = createCfg (arg2, kind)
-                connect (leftLast, rightFirst)
-                leftFirst, rightLast
+            | DerivedPatterns.SpecificCall <@@ this.Combine @@> (_, _, [arg1; arg2]) ->
+                transCombine (arg1, arg2, kind)
 
-            | DerivedPatterns.SpecificCall <@@ this.While @@>
-                (_, _, [arg1; arg2]) ->
+            | DerivedPatterns.SpecificCall <@@ this.While @@> (_, _, [arg1; arg2]) ->
                 match arg1 with
                 | Patterns.Lambda (_, cond) ->
                     match kind with
@@ -252,9 +273,12 @@ type Builder<'I, 'O>() =
                     connect (testNode, bodyFirst)
                     connect (bodyLast, testNode)
 
-                    testNode, lastNode
+                    Node (testNode, lastNode)
 
                 | _ -> failwith "The first argument of the While call is not a lambda."
+
+            | DerivedPatterns.SpecificCall <@@ this.Zero @@> _ ->
+                Expr <@@ () @@>
 
             | Patterns.Call (Some (Patterns.Value (receiver, _)), method, _)
                 when obj.ReferenceEquals(receiver, this) ->
@@ -284,8 +308,8 @@ type Builder<'I, 'O>() =
                         let trueTuple = createCfg (trueExpr, Assign waitCondVar)
                         let falseTuple = createCfg (falseExpr, Assign waitCondVar)
                         let joinNode =
-                            let varExpr = FsExpr.Coerce(FsExpr.Var(waitCondVar), typeof<obj>)
-                            let lambda = <@@ fun _ -> 0, Some %%varExpr @@>
+                            let varExpr = boxExpr (FsExpr.Var(waitCondVar))
+                            let lambda = <@ fun _ -> 0, Some %varExpr @>
                             newNode (lambda, true)
                         trueTuple, falseTuple, joinNode
 
@@ -293,56 +317,79 @@ type Builder<'I, 'O>() =
                 connect (falseLast, joinNode)
                 connect (testNode, trueFirst)
                 connect (trueLast, joinNode)
-                testNode, joinNode
+                Node (testNode, joinNode)
 
             | Patterns.Let (var, value, body) -> transLet ([(var, value)], body, kind)
             | Patterns.LetRecursive (bindings, body) -> transLet (bindings, body, kind)
 
-            | Patterns.Sequential (left, right) ->
-                let leftFirst, leftLast = createCfg (left, Unit)
-                let rightFirst, rightLast = createCfg (right, kind)
-                connect (leftLast, rightFirst)
-                leftFirst, rightLast
+            | Patterns.Sequential (left, right) -> transCombine (left, right, kind)
 
             | Patterns.TryFinally _ -> raise (new NotSupportedException("TryFinally"))
             | Patterns.TryWith _ -> raise (new NotSupportedException("TryWith"))
             | Patterns.WhileLoop _ -> raise (new NotSupportedException("WhileLoop"))
 
             // TODO: もっとちゃんと再帰的に見る
-            | expr ->
-                match kind with
-                | Unit ->
-                    let lambda = FsExpr.Lambda(FsVar("_", typeof<obj>), FsExpr.Sequential(expr, oneWay))
-                    let node = newNode (lambda, false)
-                    node, node
-                | Assign var ->
-                    let lambda =
-                        FsExpr.Lambda(
-                            FsVar("_", typeof<obj>),
-                            FsExpr.Sequential(
-                                FsExpr.VarSet(var, expr),
-                                oneWay))
-                    let node = newNode (lambda, false)
-                    node, node
-                | WaitCondition ->
-                    let lambda = <@@ fun _ -> 0, Some %%(FsExpr.Coerce(expr, typeof<obj>)) @@>
-                    let node = newNode (lambda, true)
-                    node, node
+            | expr -> Expr expr
 
         and transLet (bindings, body, kind) =
             let rec bindingToNode = function
-                | [(var, value)] -> createCfg (value, Assign var)
+                | [(var, value)] ->
+                    match createCfgOrExpr (value, Assign var) with
+                    | Node _ as x -> x
+                    | Expr expr ->
+                        // Expr の場合、まだ VarSet されていないので、 VarSet する
+                        Expr (FsExpr.VarSet(var, expr))
                 | (var, value) :: xs ->
-                    let leftFirst, leftLast = createCfg (value, Assign var)
-                    let rightFirst, rightLast = bindingToNode xs
-                    connect (leftLast, rightFirst)
-                    leftFirst, rightLast
+                    match bindingToNode xs with
+                    | Node (rightFirst, rightLast) ->
+                        // TODO: left が Expr で済むなら、前のノードとまとめる
+                        let leftFirst, leftLast = createCfg (value, Assign var)
+                        connect (leftLast, rightFirst)
+                        Node (leftFirst, rightLast)
+
+                    | Expr rightExpr ->
+                        match createCfgOrExpr (value, Assign var) with
+                        | Node (leftFirst, leftLast) ->
+                            let rightNode = exprToNode (rightExpr, Unit)
+                            connect (leftLast, rightNode)
+                            Node (leftFirst, rightNode)
+                        | Expr leftExpr ->
+                            Expr (FsExpr.Sequential(FsExpr.VarSet(var, leftExpr), rightExpr))
+
                 | [] -> invalidArg "bindings" "bindings is empty."
 
-            let bindingFirst, bindingLast = bindingToNode bindings
-            let bodyFirst, bodyLast = createCfg (body, kind)
-            connect (bindingLast, bodyFirst)
-            bindingFirst, bodyLast
+            match bindingToNode bindings with
+            | Node (bindingFirst, bindingLast) ->
+                // TODO: body が Expr で済むなら、前のノードとまとめる
+                let bodyFirst, bodyLast = createCfg (body, kind)
+                connect (bindingLast, bodyFirst)
+                Node (bindingFirst, bodyLast)
+            | Expr bindingExpr ->
+                match createCfgOrExpr (body, kind) with
+                | Node (bodyFirst, bodyLast) ->
+                    let bindingNode = exprToNode (bindingExpr, Unit)
+                    connect (bindingNode, bodyFirst)
+                    Node (bindingNode, bodyLast)
+                | Expr bodyExpr ->
+                    Expr (FsExpr.Sequential(bindingExpr, bodyExpr))
+
+        and transCombine (left, right, kind) =
+            match createCfgOrExpr (left, Unit), createCfgOrExpr (right, kind) with
+            | Expr left, Expr right ->
+                Expr (FsExpr.Sequential(left, right))
+            | t ->
+                let (leftFirst, leftLast), (rightFirst, rightLast) =
+                    match t with
+                    | Node left, Expr right ->
+                        let rightNode = exprToNode (right, kind)
+                        left, (rightNode, rightNode)
+                    | Expr left, Node right ->
+                        let leftNode = exprToNode (left, Unit)
+                        (leftNode, leftNode), right
+                    | Node left, Node right -> left, right
+                    | Expr _, Expr _ -> failwith "unreachable"
+                connect (leftLast, rightFirst)
+                Node (leftFirst, rightLast)
 
         let rootNode, exitNode = createCfg (expr, Unit)
 
