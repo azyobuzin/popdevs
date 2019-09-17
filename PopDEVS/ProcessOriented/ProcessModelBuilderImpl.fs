@@ -3,6 +3,7 @@ module PopDEVS.ProcessOriented.ProcessModelBuilderImpl
 open System
 open System.Collections.Generic
 open System.Collections.Immutable
+open System.Text
 open FSharp.Quotations
 open PopDEVS
 
@@ -46,6 +47,25 @@ type internal CfgNode =
       mutable Expr: FsExpr
       mutable ReturnsWaitCondition: bool
       Edges: List<CfgNode> }
+
+let internal printGraph (rootNode: CfgNode) =
+    let nodes = List<CfgNode>()
+    let rec traverse node =
+        if not (nodes.Contains(node)) then
+            nodes.Add(node)
+            node.Edges |> Seq.iter traverse
+    traverse rootNode
+
+    for i, node in Seq.indexed nodes do
+        let firstLine =
+            String.Format(
+                "=== Node {0}{1} ===",
+                i,
+                if node.ReturnsWaitCondition then " (Wait)" else "")
+        printfn "%s\n%A" firstLine node.Expr
+        let edgeNumbers = node.Edges |> Seq.map (fun n -> nodes.IndexOf(n))
+        printfn "Edges: %s" (String.Join(", ", edgeNumbers))
+        printfn "%s\n" (String('=', firstLine.Length))
 
 /// CfgNode.Expr の戻り値の種類
 type internal NodeBehavior =
@@ -100,8 +120,6 @@ type Builder<'I, 'O>() =
         doNotCall ()
 
     member this.Run(expr: Expr<unit>) =
-        printfn "%O" expr
-
         let env = newEnv ()
 
         /// 出現した ValueWithName を env に記録する
@@ -131,16 +149,17 @@ type Builder<'I, 'O>() =
 
         let oneWay = <@ 0, None @>
         let boxExpr expr = FsExpr.Cast<obj>(FsExpr.Coerce(expr, typeof<obj>))
+        let discardObjVar () = FsVar("_", typeof<obj>)
 
         /// 条件を実行し、 false なら 0 番目、 true なら 1 番目の辺に進むノードを作成する
         let condToNode cond =
             // fun _ -> (if cond then 1 else 0), None
             let transitionExpr = FsExpr.IfThenElse(cond, <@@ 1 @@>, <@@ 0 @@>)
-            let condLambda = FsExpr.Lambda(FsVar("_", typeof<obj>), FsExpr.NewTuple([transitionExpr; <@@ None @@>]))
+            let condLambda = FsExpr.Lambda(discardObjVar (), FsExpr.NewTuple([transitionExpr; <@@ None @@>]))
             newNode (condLambda, false)
 
         let doNothingNode () =
-            newNode (FsExpr.Lambda(FsVar("_", typeof<obj>), oneWay), false)
+            newNode (FsExpr.Lambda(discardObjVar (), oneWay), false)
 
         let ensureWaitConditionType (ty: Type) =
             if ty.FullName <> "PopDEVS.ProcessOriented.WaitCondition`2" then
@@ -152,7 +171,7 @@ type Builder<'I, 'O>() =
                 // fun _ ->
                 //     expr
                 //     0, None
-                let lambda = FsExpr.Lambda(FsVar("_", typeof<obj>), FsExpr.Sequential(expr, oneWay))
+                let lambda = FsExpr.Lambda(discardObjVar (), FsExpr.Sequential(expr, oneWay))
                 let node = newNode (lambda, false)
                 node
             | Assign var ->
@@ -161,7 +180,7 @@ type Builder<'I, 'O>() =
                 //     0, None
                 let lambda =
                     FsExpr.Lambda(
-                        FsVar("_", typeof<obj>),
+                        discardObjVar (),
                         FsExpr.Sequential(
                             FsExpr.VarSet(var, expr),
                             oneWay))
@@ -303,7 +322,7 @@ type Builder<'I, 'O>() =
 
                         // trueExpr, falseExpr が返す WaitCondition を変数に保存して、 joinNode でそれを返す
                         // TODO: WaitCondition を状態保存に含めるわけにはいかないので、うまく変数を使うのを回避する
-                        let waitCondVar = Var("waitCondition", trueType)
+                        let waitCondVar = FsVar("waitCondition", trueType)
                         addVar waitCondVar
                         let trueTuple = createCfg (trueExpr, Assign waitCondVar)
                         let falseTuple = createCfg (falseExpr, Assign waitCondVar)
@@ -339,6 +358,7 @@ type Builder<'I, 'O>() =
                     | Expr expr ->
                         // Expr の場合、まだ VarSet されていないので、 VarSet する
                         Expr (FsExpr.VarSet(var, expr))
+
                 | (var, value) :: xs ->
                     match bindingToNode xs with
                     | Node (rightFirst, rightLast) ->
@@ -392,6 +412,7 @@ type Builder<'I, 'O>() =
                 Node (leftFirst, rightLast)
 
         let rootNode, exitNode = createCfg (expr, Unit)
+        printGraph rootNode
 
         raise (NotImplementedException())
         //BuilderResult<'I, 'O>(tree)
