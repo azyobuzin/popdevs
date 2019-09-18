@@ -149,6 +149,74 @@ type Builder<'I, 'O>() =
         let boxExpr expr = FsExpr.Cast<obj>(FsExpr.Coerce(expr, typeof<obj>))
         let discardObjVar () = FsVar("_", typeof<obj>)
 
+        let (|OneWayExpr|_|) = function
+            | Patterns.NewTuple [DerivedPatterns.Int32 0; Patterns.NewUnionCase (caseInfo, [])]
+                when caseInfo.DeclaringType = typeof<obj option> && caseInfo.Name = "None" ->
+                Some ()
+            | _ -> None
+
+        let (|OneWayLambda|_|) expr =
+            /// Sequential で連結された最後の式と、それ以外に分離する
+            let rec splitLastExpr = function
+                | Patterns.Sequential (left, right) ->
+                    match splitLastExpr right with
+                    | Some proc, last -> Some (FsExpr.Sequential (left, proc)), last
+                    | None, last -> Some left, last
+                | x -> None, x
+
+            match expr with
+            | Patterns.Lambda (lambdaVar, lambdaBody) ->
+                let body, last = splitLastExpr lambdaBody
+                match last with
+                | OneWayExpr -> Some (lambdaVar, body)
+                | _ -> None
+            | _ -> None
+        
+        /// node の最後に expr を挿入する
+        let appendExpr expr node =
+            if node.Edges.Count <> 0 then
+                invalidOp "The node has edges."
+            if node.ReturnsWaitCondition then
+                invalidOp "The node returns wait condition."
+
+            match expr, node.Expr with
+            | DerivedPatterns.Unit, _ -> ()
+            | _, OneWayLambda (lambdaVar, body) ->
+                let newBody =
+                    match body with
+                    | None | Some DerivedPatterns.Unit -> expr
+                    | Some x -> FsExpr.Sequential(x, expr)
+                node.Expr <- FsExpr.Lambda(lambdaVar, FsExpr.Sequential(newBody, oneWay))
+            | _ -> invalidArg "node" "node.Expr is not one way expression."
+
+        /// node の最初に expr を挿入する
+        let prependExpr expr node =
+            match expr, node.Expr with
+            | DerivedPatterns.Unit, _ -> ()
+            | _, OneWayLambda (lambdaVar, (None | Some DerivedPatterns.Unit)) ->
+                node.Expr <- FsExpr.Lambda(lambdaVar, FsExpr.Sequential(expr, oneWay))
+            | _, Patterns.Lambda (lambdaVar, body) ->
+                node.Expr <- FsExpr.Lambda(lambdaVar, FsExpr.Sequential(expr, body))
+            | _ -> invalidArg "node" "node.Expr is not a lambda."
+
+        /// 2つの NodeOrExpr を連結する
+        let connectNodeOrExpr = function
+            | Expr DerivedPatterns.Unit, Expr right ->
+                Expr right
+            | Expr left, Expr DerivedPatterns.Unit ->
+                Expr left
+            | Expr left, Expr right ->
+                Expr (FsExpr.Sequential(left, right))
+            | (Node (_, leftLast) as left), Expr right ->
+                appendExpr right leftLast
+                left
+            | Expr left, (Node (rightFirst, _) as right) ->
+                prependExpr left rightFirst
+                right
+            | Node (leftFirst, leftLast), Node (rightFirst, rightLast) ->
+                connect (leftLast, rightFirst)
+                Node (leftFirst, rightLast)
+
         /// 汎用的な式の簡略化
         let rec reduceExpr = function
             // (fun x -> x) arg のように、ラムダに対してすぐに適用を行う式を、ラムダを使わない形に変形する。
@@ -268,61 +336,70 @@ type Builder<'I, 'O>() =
 
                 match arg2 with
                 | Patterns.Lambda (resultVar, body) ->
-                    addVar resultVar
+                    // resultVar が使われているなら、 resultVar に結果を代入するノードを作る。
+                    // そうでないなら、結果を無視して、単純なノードを作る。
+                    if body.GetFreeVars() |> Seq.contains resultVar then
+                        addVar resultVar
 
-                    let funcParam = FsVar("waitResult", typeof<obj>)
-                    let assignExpr = FsExpr.VarSet(resultVar, FsExpr.Coerce(FsExpr.Var(funcParam), waitResultType))
+                        let funcParam = FsVar("waitResult", typeof<obj>)
+                        let assignExpr = FsExpr.VarSet(resultVar, FsExpr.Coerce(FsExpr.Var(funcParam), waitResultType))
 
-                    match createCfgOrExpr (body, kind) with
-                    | Node (rightFirst, rightLast) ->
-                        let assignNode =
-                            // fun waitResult ->
-                            //     resultVar <- waitResult
-                            //     0, None
-                            let assignLambda = FsExpr.Lambda(funcParam, FsExpr.Sequential(assignExpr, oneWay))
-                            newNode (assignLambda, false)
-                        connect (leftLast, assignNode)
-                        connect (assignNode, rightFirst)
-                        Node (leftFirst, rightLast)
+                        match createCfgOrExpr (body, kind) with
+                        | Node (rightFirst, rightLast) ->
+                            // rightFirst の前に、代入する式を挿入する
+                            match rightFirst.Expr with
+                            | Patterns.Lambda (lambdaVar, rightFirstBody) ->
+                                if rightFirstBody.GetFreeVars() |> Seq.contains lambdaVar then
+                                    failwith "The lambda parameter is referenced."
+                                rightFirst.Expr <-
+                                    FsExpr.Lambda(funcParam, FsExpr.Sequential(assignExpr, rightFirstBody))
+                            | _ -> failwith "rightFirst.Expr is not a lambda."
 
-                    | Expr bodyExpr ->
-                        let nodeExpr, returnsWaitCondition =
-                            match kind with
-                            | Unit ->
-                                // fun waitResult ->
-                                //     resultVar <- waitResult
-                                //     bodyExpr
-                                //     0, None
-                                let e =
-                                    FsExpr.Sequential(
-                                        FsExpr.Sequential(assignExpr, bodyExpr),
-                                        oneWay)
-                                e, false
-                            | Assign varToAssign ->
-                                // fun waitResult ->
-                                //     resultVar <- waitResult
-                                //     varToAssign <- bodyExpr
-                                //     0, None
-                                let e =
-                                    FsExpr.Sequential(
+                            connect (leftLast, rightFirst)
+                            Node (leftFirst, rightLast)
+
+                        | Expr bodyExpr ->
+                            let nodeExpr, returnsWaitCondition =
+                                match kind with
+                                | Unit ->
+                                    // fun waitResult ->
+                                    //     resultVar <- waitResult
+                                    //     bodyExpr
+                                    //     0, None
+                                    let e =
+                                        FsExpr.Sequential(
+                                            FsExpr.Sequential(assignExpr, bodyExpr),
+                                            oneWay)
+                                    e, false
+                                | Assign varToAssign ->
+                                    // fun waitResult ->
+                                    //     resultVar <- waitResult
+                                    //     varToAssign <- bodyExpr
+                                    //     0, None
+                                    let e =
+                                        FsExpr.Sequential(
+                                            FsExpr.Sequential(
+                                                assignExpr,
+                                                FsExpr.VarSet(varToAssign, bodyExpr)),
+                                            oneWay)
+                                    e, false
+                                | WaitCondition ->
+                                    // fun waitResult ->
+                                    //     resultVar <- waitResult
+                                    //     0, Some bodyExpr
+                                    let e =
                                         FsExpr.Sequential(
                                             assignExpr,
-                                            FsExpr.VarSet(varToAssign, bodyExpr)),
-                                        oneWay)
-                                e, false
-                            | WaitCondition ->
-                                // fun waitResult ->
-                                //     resultVar <- waitResult
-                                //     0, Some bodyExpr
-                                let e =
-                                    FsExpr.Sequential(
-                                        assignExpr,
-                                        <@ 0, Some %(boxExpr bodyExpr) @>)
-                                e, true
-                        let lambda = FsExpr.Lambda(funcParam, nodeExpr)
-                        let rightNode = newNode (lambda, returnsWaitCondition)
-                        connect (leftLast, rightNode)
-                        Node (leftLast, rightNode)
+                                            <@ 0, Some %(boxExpr bodyExpr) @>)
+                                    e, true
+                            let lambda = FsExpr.Lambda(funcParam, nodeExpr)
+                            let rightNode = newNode (lambda, returnsWaitCondition)
+                            connect (leftLast, rightNode)
+                            Node (leftLast, rightNode)
+                    else
+                        let rightFirst, rightLast = createCfg (body, kind)
+                        connect (leftLast, rightFirst)
+                        Node (leftLast, rightLast)
 
                 | _ -> failwith "The second argument of the Bind call is not a lambda."
 
@@ -405,6 +482,7 @@ type Builder<'I, 'O>() =
         and transLet (bindings, body, kind) =
             let rec bindingToNode = function
                 | [(var, value)] ->
+                    addVar var
                     match createCfgOrExpr (value, Assign var) with
                     | Node _ as x -> x
                     | Expr expr ->
@@ -412,56 +490,20 @@ type Builder<'I, 'O>() =
                         Expr (FsExpr.VarSet(var, expr))
 
                 | (var, value) :: xs ->
-                    match bindingToNode xs with
-                    | Node (rightFirst, rightLast) ->
-                        // TODO: left が Expr で済むなら、前のノードとまとめる
-                        let leftFirst, leftLast = createCfg (value, Assign var)
-                        connect (leftLast, rightFirst)
-                        Node (leftFirst, rightLast)
-
-                    | Expr rightExpr ->
+                    addVar var
+                    let left =
                         match createCfgOrExpr (value, Assign var) with
-                        | Node (leftFirst, leftLast) ->
-                            let rightNode = exprToNode (rightExpr, Unit)
-                            connect (leftLast, rightNode)
-                            Node (leftFirst, rightNode)
-                        | Expr leftExpr ->
-                            Expr (FsExpr.Sequential(FsExpr.VarSet(var, leftExpr), rightExpr))
+                        | Node _ as x -> x
+                        | Expr expr -> Expr (FsExpr.VarSet(var, expr))
+                    let right = bindingToNode xs
+                    connectNodeOrExpr (left, right)
 
                 | [] -> invalidArg "bindings" "bindings is empty."
 
-            match bindingToNode bindings with
-            | Node (bindingFirst, bindingLast) ->
-                // TODO: body が Expr で済むなら、前のノードとまとめる
-                let bodyFirst, bodyLast = createCfg (body, kind)
-                connect (bindingLast, bodyFirst)
-                Node (bindingFirst, bodyLast)
-            | Expr bindingExpr ->
-                match createCfgOrExpr (body, kind) with
-                | Node (bodyFirst, bodyLast) ->
-                    let bindingNode = exprToNode (bindingExpr, Unit)
-                    connect (bindingNode, bodyFirst)
-                    Node (bindingNode, bodyLast)
-                | Expr bodyExpr ->
-                    Expr (FsExpr.Sequential(bindingExpr, bodyExpr))
+            connectNodeOrExpr (bindingToNode bindings, createCfgOrExpr (body, kind))
 
         and transCombine (left, right, kind) =
-            match createCfgOrExpr (left, Unit), createCfgOrExpr (right, kind) with
-            | Expr left, Expr right ->
-                Expr (FsExpr.Sequential(left, right))
-            | t ->
-                let (leftFirst, leftLast), (rightFirst, rightLast) =
-                    match t with
-                    | Node left, Expr right ->
-                        let rightNode = exprToNode (right, kind)
-                        left, (rightNode, rightNode)
-                    | Expr left, Node right ->
-                        let leftNode = exprToNode (left, Unit)
-                        (leftNode, leftNode), right
-                    | Node left, Node right -> left, right
-                    | Expr _, Expr _ -> failwith "unreachable"
-                connect (leftLast, rightFirst)
-                Node (leftFirst, rightLast)
+            connectNodeOrExpr (createCfgOrExpr (left, Unit), createCfgOrExpr (right, kind))
 
         let rootNode, exitNode = createCfg (reduceExpr expr, Unit)
         printGraph rootNode
