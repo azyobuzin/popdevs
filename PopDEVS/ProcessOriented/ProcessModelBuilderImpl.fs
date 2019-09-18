@@ -566,7 +566,7 @@ type Builder<'I, 'O>() =
         and transCombine (left, right, kind) =
             connectNodeOrExpr (createCfgOrExpr (left, Unit), createCfgOrExpr (right, kind))
 
-        /// 条件を実行し、 false なら 0 番目、 true なら 1 番目の辺に進むノードを作成する
+        /// 条件を評価し、 false なら 0 番目、 true なら 1 番目の辺に進むノードを作成する
         and condToNode cond =
             let condVar = tmpVar ("cond", typeof<bool>)
             let condVarExpr = FsExpr.Cast<bool>(FsExpr.Var(condVar))
