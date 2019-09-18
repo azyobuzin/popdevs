@@ -3,6 +3,7 @@ module PopDEVS.ProcessOriented.ProcessModelBuilderImpl
 open System
 open System.Collections.Generic
 open FSharp.Quotations
+open FSharp.Reflection
 open PopDEVS
 
 type internal FsExpr = FSharp.Quotations.Expr
@@ -43,8 +44,16 @@ type internal CfgNode =
     { /// 前回のイベントの戻り値を受け取って、処理を行い、次に遷移する辺のインデックスを返す式
       /// 'a -> int * WaitCondition<'I, 'O, 'b> option
       mutable Expr: FsExpr
+      /// 複数の入力辺が存在する可能性があるか
+      mutable HasMultipleInbound: bool
       mutable ReturnsWaitCondition: bool
       Edges: List<CfgNode> }
+
+let internal newNode (expr, returnsWaitCondition) =
+    { Expr = expr
+      Edges = List<CfgNode>()
+      HasMultipleInbound = false
+      ReturnsWaitCondition = returnsWaitCondition }
 
 let internal printGraph (rootNode: CfgNode) =
     let nodes = List<CfgNode>()
@@ -77,11 +86,6 @@ type internal NodeBehavior =
 type internal NodeOrExpr =
     | Node of (CfgNode * CfgNode)
     | Expr of FsExpr
-
-let internal newNode (expr, returnsWaitCondition) =
-    { Expr = expr
-      Edges = List<CfgNode>()
-      ReturnsWaitCondition = returnsWaitCondition }
 
 type internal CfgEnv =
     { /// 外部からキャプチャした変数
@@ -153,85 +157,10 @@ type Builder<'I, 'O>() =
         let oneWay = <@ 0, None @>
         let boxExpr expr = FsExpr.Cast<obj>(FsExpr.Coerce(expr, typeof<obj>))
         let discardObjVar () = FsVar("_", typeof<obj>)
-
-        let (|OneWayExpr|_|) = function
-            | Patterns.NewTuple [DerivedPatterns.Int32 0; Patterns.NewUnionCase (caseInfo, [])]
-                when caseInfo.DeclaringType = typeof<obj option> && caseInfo.Name = "None" ->
-                Some ()
-            | _ -> None
-
-        let (|OneWayLambda|_|) expr =
-            /// Sequential で連結された最後の式と、それ以外に分離する
-            let rec splitLastExpr = function
-                | Patterns.Sequential (left, right) ->
-                    match splitLastExpr right with
-                    | Some proc, last -> Some (FsExpr.Sequential (left, proc)), last
-                    | None, last -> Some left, last
-                | x -> None, x
-
-            match expr with
-            | Patterns.Lambda (lambdaVar, lambdaBody) ->
-                let body, last = splitLastExpr lambdaBody
-                match last with
-                | OneWayExpr -> Some (lambdaVar, body)
-                | _ -> None
-            | _ -> None
-        
-        /// node の最後に expr を挿入する
-        let appendExpr expr node =
-            match expr, node.Expr with
-            | DerivedPatterns.Unit, _ -> ()
-            | _, OneWayLambda (lambdaVar, body) ->
-                let newBody =
-                    match body with
-                    | None | Some DerivedPatterns.Unit -> expr
-                    | Some x -> FsExpr.Sequential(x, expr)
-                node.Expr <- FsExpr.Lambda(lambdaVar, FsExpr.Sequential(newBody, oneWay))
-            | _ -> invalidArg "node" "node.Expr is not one way expression."
-
-        // TODO: while の条件ノードに挿入できてしまうバグがある
-        /// node の最初に expr を挿入する
-        let prependExpr expr node =
-            match expr, node.Expr with
-            | DerivedPatterns.Unit, _ -> ()
-            | _, OneWayLambda (lambdaVar, (None | Some DerivedPatterns.Unit)) ->
-                node.Expr <- FsExpr.Lambda(lambdaVar, FsExpr.Sequential(expr, oneWay))
-            | _, Patterns.Lambda (lambdaVar, body) ->
-                node.Expr <- FsExpr.Lambda(lambdaVar, FsExpr.Sequential(expr, body))
-            | _ -> invalidArg "node" "node.Expr is not a lambda."
-
-        /// 2つの NodeOrExpr を連結する
-        let connectNodeOrExpr = function
-            | Expr DerivedPatterns.Unit, Expr right ->
-                Expr right
-            | Expr left, Expr DerivedPatterns.Unit ->
-                Expr left
-            | Expr left, Expr right ->
-                Expr (FsExpr.Sequential(left, right))
-            | (Node (_, leftLast) as left), Expr right ->
-                appendExpr right leftLast
-                left
-            | Expr left, (Node (rightFirst, _) as right) ->
-                prependExpr left rightFirst
-                right
-            | Node (leftFirst, leftLast), Node (rightFirst, rightLast) ->
-                connect (leftLast, rightFirst)
-                Node (leftFirst, rightLast)
-
-        /// 条件を実行し、 false なら 0 番目、 true なら 1 番目の辺に進むノードを作成する
-        let condToNode cond =
-            // TODO: cond 自体が分岐することも考える
-            // fun _ -> (if cond then 1 else 0), None
-            let transitionExpr = FsExpr.IfThenElse(cond, <@@ 1 @@>, <@@ 0 @@>)
-            let condLambda = FsExpr.Lambda(discardObjVar (), FsExpr.NewTuple([transitionExpr; <@@ None @@>]))
-            newNode (condLambda, false)
-
-        let doNothingNode () =
-            newNode (FsExpr.Lambda(discardObjVar (), oneWay), false)
-
-        let ensureWaitConditionType (ty: Type) =
-            if ty.FullName <> "PopDEVS.ProcessOriented.WaitCondition`2" then
-                failwith "The type of the expression is not WaitCondition<'I, 'R>."
+        let mutable tmpVarCount = 0
+        let tmpVar (name, ty) =
+            tmpVarCount <- tmpVarCount + 1
+            FsVar(sprintf "%s%d" name tmpVarCount, ty)
 
         let exprToNode (expr, kind) =
             match kind with
@@ -257,6 +186,91 @@ type Builder<'I, 'O>() =
             | WaitCondition ->
                 let node = newNode (<@ fun _ -> 0, Some %(boxExpr expr) @>, true)
                 node
+
+        /// Sequential で連結された最後の式と、それ以外に分離する
+        let rec splitLastExpr = function
+            | Patterns.Sequential (left, right) ->
+                match splitLastExpr right with
+                | Some proc, last -> Some (FsExpr.Sequential (left, proc)), last
+                | None, last -> Some left, last
+            | x -> None, x
+
+        let (|OneWayExpr|_|) = function
+            | Patterns.NewTuple [edgeIndexExpr; Patterns.NewUnionCase (caseInfo, [])]
+                when caseInfo.DeclaringType = typeof<obj option> && caseInfo.Name = "None" ->
+                match edgeIndexExpr with
+                | Patterns.ValueWithName _ ->
+                    // ValueWithName は定数なので DerivedPatterns.Int32 にマッチするが
+                    // 定数ではなく変数として扱いたいので、先に引っ掛ける。
+                    None
+                | DerivedPatterns.Int32 0 -> Some()
+                | _ -> None
+            | _ -> None
+
+        let (|OneWayLambda|_|) expr =
+            match expr with
+            | Patterns.Lambda (lambdaVar, lambdaBody) ->
+                let body, last = splitLastExpr lambdaBody
+                match last with
+                | OneWayExpr -> Some (lambdaVar, body)
+                | _ -> None
+            | _ -> None
+        
+        /// node の最後に expr を挿入する
+        let appendExpr expr node =
+            match expr, node.Expr with
+            | DerivedPatterns.Unit, _ -> ()
+            | _, OneWayLambda (lambdaVar, body) ->
+                let newBody =
+                    match body with
+                    | None | Some DerivedPatterns.Unit -> expr
+                    | Some x -> FsExpr.Sequential(x, expr)
+                node.Expr <- FsExpr.Lambda(lambdaVar, FsExpr.Sequential(newBody, oneWay))
+            | _ -> invalidArg "node" "node.Expr is not a OneWayLambda."
+
+        /// node の最初に expr を挿入する。
+        /// 挿入できる条件を満たさない場合は、ノードを作成する。
+        let tryPrependExpr expr node =
+            if node.HasMultipleInbound then
+                // 複数の入力辺を持つ（ループ）場合、このノードを操作すると
+                // ループが破壊されるので、新たにノードを作成する。
+                let leftNode = exprToNode (expr, Unit)
+                connect (leftNode, node)
+                leftNode
+            else
+                match expr, node.Expr with
+                    | DerivedPatterns.Unit, _ -> ()
+                    | _, OneWayLambda (lambdaVar, (None | Some DerivedPatterns.Unit)) ->
+                        node.Expr <- FsExpr.Lambda(lambdaVar, FsExpr.Sequential(expr, oneWay))
+                    | _, Patterns.Lambda (lambdaVar, body) ->
+                        node.Expr <- FsExpr.Lambda(lambdaVar, FsExpr.Sequential(expr, body))
+                    | _ -> invalidArg "node" "node.Expr is not a lambda."
+                node
+
+        /// 2つの NodeOrExpr を連結する
+        let connectNodeOrExpr = function
+            | Expr DerivedPatterns.Unit, Expr right ->
+                Expr right
+            | Expr left, Expr DerivedPatterns.Unit ->
+                Expr left
+            | Expr left, Expr right ->
+                Expr (FsExpr.Sequential(left, right))
+            | (Node (_, leftLast) as left), Expr right ->
+                appendExpr right leftLast
+                left
+            | Expr left, Node (rightFirst, rightLast) ->
+                let first = tryPrependExpr left rightFirst
+                Node (first, rightLast)
+            | Node (leftFirst, leftLast), Node (rightFirst, rightLast) ->
+                connect (leftLast, rightFirst)
+                Node (leftFirst, rightLast)
+
+        let doNothingNode () =
+            newNode (FsExpr.Lambda(discardObjVar (), oneWay), false)
+
+        let ensureWaitConditionType (ty: Type) =
+            if ty.FullName <> "PopDEVS.ProcessOriented.WaitCondition`2" then
+                failwith "The type of the expression is not WaitCondition<'I, 'R>."
 
         let rec createCfg (expr, kind) =
             match createCfgOrExpr (expr, kind) with
@@ -289,7 +303,7 @@ type Builder<'I, 'O>() =
                     if body.GetFreeVars() |> Seq.contains resultVar then
                         addVar resultVar
 
-                        let funcParam = FsVar("waitResult", typeof<obj>)
+                        let funcParam = tmpVar ("waitResult", typeof<obj>)
                         let assignExpr = FsExpr.VarSet(resultVar, FsExpr.Coerce(FsExpr.Var(funcParam), waitResultType))
 
                         match createCfgOrExpr (body, kind) with
@@ -361,20 +375,36 @@ type Builder<'I, 'O>() =
                     | Unit -> ()
                     | _ -> failwith "NodeBehavior.Unit can only be used for While."
 
-                    let testNode = condToNode cond
-                    let lastNode = doNothingNode ()
-                    let (bodyFirst, bodyLast) = createCfg (arg2, Unit)
+                    let createWithTestNode () =
+                        let testFirst, testLast = condToNode cond
+                        testFirst.HasMultipleInbound <- true
+                        let lastNode = doNothingNode ()
+                        let (bodyFirst, bodyLast) = createCfg (arg2, Unit)
 
-                    connect (testNode, lastNode)
-                    connect (testNode, bodyFirst)
-                    connect (bodyLast, testNode)
+                        connect (testLast, lastNode)
+                        connect (testLast, bodyFirst)
+                        connect (bodyLast, testFirst)
 
-                    Node (testNode, lastNode)
+                        Node (testFirst, lastNode)
+
+                    match cond with
+                    | Patterns.ValueWithName _ ->
+                        // ValueWithName は定数なので DerivedPatterns.Bool にマッチするが
+                        // 定数ではなく変数として扱いたいので、先に引っ掛ける。
+                        createWithTestNode ()
+                    | DerivedPatterns.Bool true ->
+                        // 無限ループ
+                        let (bodyFirst, bodyLast) = createCfg (arg2, Unit)
+                        bodyFirst.HasMultipleInbound <- true
+                        connect (bodyLast, bodyFirst)
+                        Node (bodyFirst, bodyLast)
+                    | DerivedPatterns.Bool false -> Expr <@ () @>
+                    | _ -> createWithTestNode ()
 
                 | _ -> failwith "The first argument of the While call is not a lambda."
 
             | DerivedPatterns.SpecificCall <@@ this.Zero @@> _ ->
-                Expr <@@ () @@>
+                Expr <@ () @>
 
             | Patterns.Call (Some (Patterns.Value (receiver, _)), method, _)
                 when obj.ReferenceEquals(receiver, this) ->
@@ -383,7 +413,7 @@ type Builder<'I, 'O>() =
             // その他の文法
 
             | Patterns.IfThenElse (cond, trueExpr, falseExpr) ->
-                let testNode = condToNode cond
+                let testFirst, testLast = condToNode cond
 
                 let (trueFirst, trueLast), (falseFirst, falseLast), joinNode =
                     match kind with
@@ -399,7 +429,7 @@ type Builder<'I, 'O>() =
 
                         // trueExpr, falseExpr が返す WaitCondition を変数に保存して、 joinNode でそれを返す
                         // TODO: WaitCondition を状態保存に含めるわけにはいかないので、うまく変数を使うのを回避する
-                        let waitCondVar = FsVar("waitCondition", trueType)
+                        let waitCondVar = tmpVar ("waitCondition", trueType)
                         addVar waitCondVar
                         let trueTuple = createCfg (trueExpr, Assign waitCondVar)
                         let falseTuple = createCfg (falseExpr, Assign waitCondVar)
@@ -409,11 +439,11 @@ type Builder<'I, 'O>() =
                             newNode (lambda, true)
                         trueTuple, falseTuple, joinNode
 
-                connect (testNode, falseFirst)
+                connect (testLast, falseFirst)
                 connect (falseLast, joinNode)
-                connect (testNode, trueFirst)
+                connect (testLast, trueFirst)
                 connect (trueLast, joinNode)
-                Node (testNode, joinNode)
+                Node (testFirst, joinNode)
 
             | Patterns.Let (var, value, body) -> transLet ([(var, value)], body, kind)
             | Patterns.LetRecursive (bindings, body) -> transLet (bindings, body, kind)
@@ -436,19 +466,79 @@ type Builder<'I, 'O>() =
 
             | ExprShape.ShapeCombination (shape, args) ->
                 let blocks = List()
-                let currentBlock = List()
+                let currentBlock = List<FsExpr>()
                 for argExpr in args do
-                    match createCfgOrExpr (argExpr, Unit) with
-                    | Node x ->
-                        blocks.Add((currentBlock.ToArray(), x))
+                    let lastArgVar = tmpVar ("combArg", argExpr.Type)
+                    match createCfgOrExpr (argExpr, Assign lastArgVar) with
+                    | Node (nodeFirst, nodeLast) ->
+                        match nodeLast.Expr with
+                        | OneWayLambda _ -> ()
+                        | _ -> failwith "nodeLast.Expr is not a OneWayLambda."
+
+                        let otherExprs = currentBlock.ToArray()
                         currentBlock.Clear()
+
+                        let otherArgsVar, nodeFirst =
+                            match otherExprs.Length with
+                            | 0 -> None, nodeFirst
+                            | _ ->
+                                let argTypes = otherExprs |> Seq.map (fun x -> x.Type) |> Seq.toArray
+                                let otherArgsVar = tmpVar ("combArgs", FSharpType.MakeTupleType(argTypes))
+                                addVar otherArgsVar
+
+                                // nodeFirst の前に代入を挿入する
+                                let assignExpr = FsExpr.VarSet(otherArgsVar, FsExpr.NewTuple(List.ofArray otherExprs))
+                                Some otherArgsVar, tryPrependExpr assignExpr nodeFirst
+
+                        addVar lastArgVar
+                        blocks.Add(((nodeFirst, nodeLast), otherArgsVar, otherExprs.Length, lastArgVar))
                     | Expr x -> currentBlock.Add(x)
 
                 if blocks.Count = 0 then
                     // CFG ノードへの変形は必要ないので、そのまま再構成する
                     Expr (ExprShape.RebuildShapeCombination(shape, List.ofSeq currentBlock))
                 else
-                    raise (NotImplementedException()) // TODO
+                    // CFG ノードを連結する
+                    let assignNodeFirst, assignNodeLast =
+                        let reduction (currentFirst, currentLast) (nextFirst, nextLast) =
+                            connect (currentLast, nextFirst)
+                            currentFirst, nextLast
+                        blocks |> Seq.map (fun (x, _, _, _) -> x)
+                               |> Seq.reduce reduction
+
+                    // 代入された値を使って、式を組み立て直す
+                    let rebuiltExpr =
+                        let rebuiltArgs =
+                            let blockToExprs (_, otherArgsVar, otherArgCount, lastArgVar) =
+                                let exprs =
+                                    match otherArgsVar with
+                                    | Some x -> Seq.init otherArgCount (fun i -> FsExpr.TupleGet(FsExpr.Var(x), i))
+                                    | None -> Seq.empty
+                                Seq.append exprs (Seq.singleton (FsExpr.Var(lastArgVar)))
+                            Seq.append (Seq.collect blockToExprs blocks) currentBlock
+                        ExprShape.RebuildShapeCombination(shape, List.ofSeq rebuiltArgs)
+
+                    // 最後のノードに式を追加する
+                    let lambdaVar, (nodeExpr, returnsWaitCondition) =
+                        match assignNodeLast.Expr with
+                        | OneWayLambda (lambdaVar, body) ->
+                            let newBody =
+                                match body with
+                                | Some x -> FsExpr.Sequential(x, rebuiltExpr)
+                                | None -> rebuiltExpr
+                            lambdaVar,
+                            match kind with
+                            | Unit ->
+                                FsExpr.Sequential(newBody, oneWay), false
+                            | Assign var ->
+                                FsExpr.Sequential(FsExpr.VarSet(var, newBody), oneWay), false
+                            | WaitCondition ->
+                                <@@ 0, Some %(boxExpr newBody) @@>, true
+                        | _ -> failwith "assignNodeLast.Expr is not a OneWayLambda"
+
+                    assignNodeLast.Expr <- FsExpr.Lambda(lambdaVar, nodeExpr)
+                    assignNodeLast.ReturnsWaitCondition <- returnsWaitCondition
+                    Node (assignNodeFirst, assignNodeLast)
 
         and transLet (bindings, body, kind) =
             let rec bindingToNode = function
@@ -475,6 +565,52 @@ type Builder<'I, 'O>() =
 
         and transCombine (left, right, kind) =
             connectNodeOrExpr (createCfgOrExpr (left, Unit), createCfgOrExpr (right, kind))
+
+        /// 条件を実行し、 false なら 0 番目、 true なら 1 番目の辺に進むノードを作成する
+        and condToNode cond =
+            let condVar = tmpVar ("cond", typeof<bool>)
+            let condVarExpr = FsExpr.Cast<bool>(FsExpr.Var(condVar))
+
+            let firstNode, lastNode = createCfg (cond, Assign condVar)
+            let lastNode =
+                match lastNode.Expr with
+                | OneWayLambda (lambdaVar, (None | Some DerivedPatterns.Unit)) ->
+                    // body がないので、 condVar によって分岐する式に完全に置き換える
+                    addVar condVar
+                    lastNode.Expr <-
+                        FsExpr.Lambda(
+                            lambdaVar,
+                            <@ (if %condVarExpr then 1 else 0), None @>)
+                    lastNode
+                | OneWayLambda (lambdaVar, Some body) ->
+                    let proc, lastExpr = splitLastExpr body
+                    match lastExpr with
+                    | Patterns.VarSet (setVar, setExpr) when setVar = condVar ->
+                        // 最後の式が condVar への代入ならば、代入ごと消す
+                        let returnExpr = <@@ (if %%setExpr then 1 else 0), None @@>
+                        let newBody =
+                            match proc with
+                            | Some x -> FsExpr.Sequential(x, returnExpr)
+                            | None -> returnExpr
+                        lastNode.Expr <- FsExpr.Lambda(lambdaVar,newBody)
+                    | _ ->
+                        // condVar によって分岐する
+                        addVar condVar
+                        lastNode.Expr <-
+                            FsExpr.Lambda(
+                                lambdaVar,
+                                FsExpr.Sequential(
+                                    body,
+                                     <@ (if %condVarExpr then 1 else 0), None @>))
+                    lastNode
+                | _ ->
+                    addVar condVar
+                    let lambda = <@ fun _ -> (if %condVarExpr then 1 else 0), None @>
+                    let condNode = newNode (lambda, false)
+                    connect (lastNode, condNode)
+                    condNode
+
+            firstNode, lastNode
 
         let rootNode, exitNode = createCfg (expr, Unit)
         printGraph rootNode
