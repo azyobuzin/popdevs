@@ -2,8 +2,6 @@ module PopDEVS.ProcessOriented.ProcessModelBuilderImpl
 
 open System
 open System.Collections.Generic
-open System.Collections.Immutable
-open System.Text
 open FSharp.Quotations
 open PopDEVS
 
@@ -58,14 +56,14 @@ let internal printGraph (rootNode: CfgNode) =
 
     for i, node in Seq.indexed nodes do
         let firstLine =
-            String.Format(
-                "=== Node {0}{1} ===",
-                i,
-                if node.ReturnsWaitCondition then " (Wait)" else "")
-        printfn "%s\n%A" firstLine node.Expr
+            sprintf "=== Node %d%s ===" i
+                (if node.ReturnsWaitCondition then " (Wait)" else "")
         let edgeNumbers = node.Edges |> Seq.map (fun n -> nodes.IndexOf(n))
-        printfn "Edges: %s" (String.Join(", ", edgeNumbers))
-        printfn "%s\n" (String('=', firstLine.Length))
+        printf "%s\n%A\nEdges: %s\n%s\n\n"
+            firstLine
+            node.Expr
+            (String.Join(", ", edgeNumbers))
+            (String('=', firstLine.Length))
 
 /// CfgNode.Expr の戻り値の種類
 type internal NodeBehavior =
@@ -151,8 +149,62 @@ type Builder<'I, 'O>() =
         let boxExpr expr = FsExpr.Cast<obj>(FsExpr.Coerce(expr, typeof<obj>))
         let discardObjVar () = FsVar("_", typeof<obj>)
 
+        /// 汎用的な式の簡略化
+        let rec reduceExpr = function
+            // (fun x -> x) arg のように、ラムダに対してすぐに適用を行う式を、ラムダを使わない形に変形する。
+            // 例えば、 static メンバーとして定義されている関数の適用は、 fun(x -> Method(x)) arg のようになっているので、これを簡単な形にしたい。
+            | DerivedPatterns.Applications (expr, args) ->
+                let rec apply = function
+                    | Patterns.Lambda (var, body), arg :: tail ->
+                        match arg with
+                        | [] -> apply (body, tail)
+                        | [value] -> FsExpr.Let(var, reduceExpr value, apply (body, tail))
+                        | argsTuple ->
+                            // body の最初がタプルの展開ならば、タプルを使わないように変形する
+                            let letVars = Array.zeroCreate (List.length argsTuple)
+                            let innerExpr =
+                                let rec traverse = function
+                                    | Patterns.Let (letVar,
+                                                    Patterns.TupleGet (Patterns.Var tupleVar, tupleIndex),
+                                                    inner) when var = tupleVar ->
+                                        letVars.[tupleIndex] <- Some letVar
+                                        traverse inner
+                                    | x -> x
+                                traverse body
+
+                            let referredVars = innerExpr.GetFreeVars() |> Set
+
+                            if Set.contains var referredVars then
+                                // var が innerExpr から参照されているため、変形できない
+                                let arg = FsExpr.NewTuple(argsTuple |> List.map reduceExpr)
+                                FsExpr.Let(var, arg, apply (body, tail))
+                            else
+                                // 変形できる
+                                let folder letVar arg expr =
+                                    match letVar with
+                                    | Some x when Set.contains x referredVars ->
+                                        // 変数が実際に使われているなら、 let にする
+                                        FsExpr.Let(x, reduceExpr arg, expr)
+                                    | _ ->
+                                        match reduceExpr arg with
+                                        | DerivedPatterns.Unit -> expr
+                                        | arg -> FsExpr.Sequential(arg, expr)
+                                Seq.foldBack2 folder letVars argsTuple (apply (innerExpr, tail))
+
+                    | x, _ -> reduceExpr x
+                apply (expr, args)
+
+            | ExprShape.ShapeLambda (var, expr) ->
+                FsExpr.Lambda(var, reduceExpr expr)
+
+            | ExprShape.ShapeCombination (shape, args) ->
+                ExprShape.RebuildShapeCombination(shape, args |> List.map reduceExpr)
+
+            | x -> x
+
         /// 条件を実行し、 false なら 0 番目、 true なら 1 番目の辺に進むノードを作成する
         let condToNode cond =
+            // TODO: cond 自体が分岐することも考える
             // fun _ -> (if cond then 1 else 0), None
             let transitionExpr = FsExpr.IfThenElse(cond, <@@ 1 @@>, <@@ 0 @@>)
             let condLambda = FsExpr.Lambda(discardObjVar (), FsExpr.NewTuple([transitionExpr; <@@ None @@>]))
@@ -411,7 +463,7 @@ type Builder<'I, 'O>() =
                 connect (leftLast, rightFirst)
                 Node (leftFirst, rightLast)
 
-        let rootNode, exitNode = createCfg (expr, Unit)
+        let rootNode, exitNode = createCfg (reduceExpr expr, Unit)
         printGraph rootNode
 
         raise (NotImplementedException())
