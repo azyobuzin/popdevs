@@ -143,6 +143,11 @@ type Builder<'I, 'O>() =
         let addVar (var: FsVar) =
             env.Variables.Add(var, newVar (var.Name, var.Type))
 
+        let markAsEscaped (var: FsVar) =
+            match env.Variables.TryFind(var) with
+            | Some x -> x.IsEscaped <- true
+            | None -> ()
+
         let connect (left, right) = left.Edges.Add(right)
 
         let oneWay = <@ 0, None @>
@@ -174,11 +179,6 @@ type Builder<'I, 'O>() =
         
         /// node の最後に expr を挿入する
         let appendExpr expr node =
-            if node.Edges.Count <> 0 then
-                invalidOp "The node has edges."
-            if node.ReturnsWaitCondition then
-                invalidOp "The node returns wait condition."
-
             match expr, node.Expr with
             | DerivedPatterns.Unit, _ -> ()
             | _, OneWayLambda (lambdaVar, body) ->
@@ -189,6 +189,7 @@ type Builder<'I, 'O>() =
                 node.Expr <- FsExpr.Lambda(lambdaVar, FsExpr.Sequential(newBody, oneWay))
             | _ -> invalidArg "node" "node.Expr is not one way expression."
 
+        // TODO: while の条件ノードに挿入できてしまうバグがある
         /// node の最初に expr を挿入する
         let prependExpr expr node =
             match expr, node.Expr with
@@ -419,12 +420,35 @@ type Builder<'I, 'O>() =
 
             | Patterns.Sequential (left, right) -> transCombine (left, right, kind)
 
+            | Patterns.ValueWithName x as expr ->
+                recordCapturedVar x
+                Expr expr
+
             | Patterns.TryFinally _ -> raise (new NotSupportedException("TryFinally"))
             | Patterns.TryWith _ -> raise (new NotSupportedException("TryWith"))
             | Patterns.WhileLoop _ -> raise (new NotSupportedException("WhileLoop"))
 
-            // TODO: もっとちゃんと再帰的に見る
-            | expr -> Expr expr
+            | ExprShape.ShapeVar var -> Expr (FsExpr.Var(var))
+
+            | ExprShape.ShapeLambda (var, expr) ->
+                expr.GetFreeVars() |> Seq.iter markAsEscaped
+                Expr (FsExpr.Lambda(var, expr))
+
+            | ExprShape.ShapeCombination (shape, args) ->
+                let blocks = List()
+                let currentBlock = List()
+                for argExpr in args do
+                    match createCfgOrExpr (argExpr, Unit) with
+                    | Node x ->
+                        blocks.Add((currentBlock.ToArray(), x))
+                        currentBlock.Clear()
+                    | Expr x -> currentBlock.Add(x)
+
+                if blocks.Count = 0 then
+                    // CFG ノードへの変形は必要ないので、そのまま再構成する
+                    Expr (ExprShape.RebuildShapeCombination(shape, List.ofSeq currentBlock))
+                else
+                    raise (NotImplementedException()) // TODO
 
         and transLet (bindings, body, kind) =
             let rec bindingToNode = function
