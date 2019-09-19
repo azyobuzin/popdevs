@@ -45,14 +45,14 @@ type internal CfgNode =
       /// 'a -> int * WaitCondition<'I, 'O, 'b> option
       mutable Expr: FsExpr
       /// 複数の入力辺が存在する可能性があるか
-      mutable HasMultipleInbound: bool
+      mutable HasMultipleIncomingEdges: bool
       mutable ReturnsWaitCondition: bool
       Edges: List<CfgNode> }
 
 let internal newNode (expr, returnsWaitCondition) =
     { Expr = expr
       Edges = List<CfgNode>()
-      HasMultipleInbound = false
+      HasMultipleIncomingEdges = false
       ReturnsWaitCondition = returnsWaitCondition }
 
 let internal printGraph (rootNode: CfgNode) =
@@ -231,7 +231,7 @@ type Builder<'I, 'O>() =
         /// node の最初に expr を挿入する。
         /// 挿入できる条件を満たさない場合は、ノードを作成する。
         let tryPrependExpr expr node =
-            if node.HasMultipleInbound then
+            if node.HasMultipleIncomingEdges then
                 // 複数の入力辺を持つ（ループ）場合、このノードを操作すると
                 // ループが破壊されるので、新たにノードを作成する。
                 let leftNode = exprToNode (expr, Unit)
@@ -377,7 +377,7 @@ type Builder<'I, 'O>() =
 
                     let createWithTestNode () =
                         let testFirst, testLast = condToNode cond
-                        testFirst.HasMultipleInbound <- true
+                        testFirst.HasMultipleIncomingEdges <- true
                         let lastNode = doNothingNode ()
                         let (bodyFirst, bodyLast) = createCfg (arg2, Unit)
 
@@ -395,7 +395,7 @@ type Builder<'I, 'O>() =
                     | DerivedPatterns.Bool true ->
                         // 無限ループ
                         let (bodyFirst, bodyLast) = createCfg (arg2, Unit)
-                        bodyFirst.HasMultipleInbound <- true
+                        bodyFirst.HasMultipleIncomingEdges <- true
                         connect (bodyLast, bodyFirst)
                         Node (bodyFirst, bodyLast)
                     | DerivedPatterns.Bool false -> Expr <@ () @>
@@ -419,7 +419,9 @@ type Builder<'I, 'O>() =
                     match kind with
                     | Unit | Assign _ ->
                         // true, false それぞれで、やることをやって、最後に何もしないノードに戻ってくる
-                        createCfg (trueExpr, kind), createCfg (falseExpr, kind), doNothingNode ()
+                        let joinNode = doNothingNode ()
+                        joinNode.HasMultipleIncomingEdges <- true
+                        createCfg (trueExpr, kind), createCfg (falseExpr, kind), joinNode
 
                     | WaitCondition ->
                         let trueType, falseType = trueExpr.Type, falseExpr.Type
@@ -534,7 +536,7 @@ type Builder<'I, 'O>() =
                                 FsExpr.Sequential(FsExpr.VarSet(var, newBody), oneWay), false
                             | WaitCondition ->
                                 <@@ 0, Some %(boxExpr newBody) @@>, true
-                        | _ -> failwith "assignNodeLast.Expr is not a OneWayLambda"
+                        | _ -> failwith "assignNodeLast.Expr is not a OneWayLambda."
 
                     assignNodeLast.Expr <- FsExpr.Lambda(lambdaVar, nodeExpr)
                     assignNodeLast.ReturnsWaitCondition <- returnsWaitCondition
@@ -612,7 +614,79 @@ type Builder<'I, 'O>() =
 
             firstNode, lastNode
 
-        let rootNode, exitNode = createCfg (expr, Unit)
+        /// 分岐しないノードをまとめる
+        let reduceCfg rootNode =
+            let nodes =
+                let nodes = HashSet()
+                let rec traverse node =
+                    if nodes.Add(node) then
+                        node.Edges |> Seq.iter traverse
+                traverse rootNode
+                nodes |> Seq.toArray
+            let incomingEdges =
+                nodes
+                |> Seq.map (fun x ->
+                    nodes |> Seq.filter (fun y -> y.Edges.Contains(x))
+                          |> HashSet)
+                |> List
+            // Convert to a mutable list
+            let nodes = nodes |> Seq.map Some |> List
+
+            // ループしながら nodes を書き換えるので、インデックス操作でやっていく
+            let mutable i = 0
+            while i < nodes.Count do
+                match nodes.[i] with
+                | Some node when node.Edges.Count = 1 && not node.ReturnsWaitCondition ->
+                    match node.Expr with
+                    | OneWayLambda(lambdaVar, (None | Some DerivedPatterns.Unit)) ->
+                        // 何もしないノードなので、スキップできる
+                        let nextNode = node.Edges.[0]
+                        let nextNodeIncomingEdges = incomingEdges.[nodes.IndexOf(Some nextNode)]
+
+                        for incomingNode in incomingEdges.[i] do
+                            // Edges から node への辺を削除し、 nextNode への辺を追加する
+                            incomingNode.Edges.[incomingNode.Edges.IndexOf(node)] <- nextNode
+                            if not (nextNodeIncomingEdges.Add(incomingNode)) then
+                                failwith "Duplicate edge"
+
+                        nextNode.HasMultipleIncomingEdges <- nextNodeIncomingEdges.Count > 1
+                        nodes.[i] <- None
+                        incomingEdges.[i].Clear()
+
+                    | OneWayLambda(lambdaVar, Some body) when not node.Edges.[0].HasMultipleIncomingEdges ->
+                        // 次のノードと連結できる
+                        let nextNode = node.Edges.[0]
+                        let nextNodeIndex = nodes.IndexOf(Some nextNode)
+
+                        match nextNode.Expr with
+                        | Patterns.Lambda (nextLambdaVar, nextBody) ->
+                            if nextBody.GetFreeVars() |> Seq.contains nextLambdaVar then
+                                failwith "nextBody refers to the lambda argument."
+
+                            // ノードの書き換え
+                            node.Expr <- FsExpr.Lambda(lambdaVar, FsExpr.Sequential(body, nextBody))
+                            node.ReturnsWaitCondition <- nextNode.ReturnsWaitCondition
+                        | _ -> failwith "nextNode.Expr is not a lambda."
+
+                        node.Edges.Clear()
+                        node.Edges.AddRange(nextNode.Edges)
+
+                        nodes.[nextNodeIndex] <- None
+                        incomingEdges.[nextNodeIndex].Clear()
+
+                        // incomingEdges の更新
+                        for incomingSet in incomingEdges do
+                            if incomingSet.Remove(nextNode) then
+                                if not (incomingSet.Add(node)) then
+                                    failwith "Duplicate edge"
+
+                    | OneWayLambda _ -> ()
+                    | _ -> failwith "node.Expr is not a OneWayLambda."
+                | _ -> ()
+                i <- i + 1
+
+        let rootNode, _ = createCfg (expr, Unit)
+        reduceCfg rootNode
         printGraph rootNode
 
         raise (NotImplementedException())
