@@ -35,5 +35,5 @@ module AtomicModel =
             match model.Inner with
             | BoxedModel.Atomic x ->
                 BoxedModel.Atomic { x with Name = Some name }
-            | _ -> invalidArg "model" "model is not a valid AtomicModel"
+            | _ -> invalidArg (nameof model) "model is not a valid AtomicModel"
         AtomicModel<'I, 'O>(inner)

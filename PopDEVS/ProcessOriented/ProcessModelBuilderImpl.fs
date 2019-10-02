@@ -126,8 +126,8 @@ type Builder<'I, 'O>() =
 
         /// 出現した ValueWithName を env に記録する
         let recordCapturedVar (value, varType, name) =
-            if isNull varType then nullArg "varType"
-            if String.IsNullOrEmpty(name) then invalidArg "name" "name is null or empty."
+            if isNull varType then nullArg (nameof varType)
+            if String.IsNullOrEmpty(name) then invalidArg (nameof name) "name is null or empty."
 
             match env.CapturedVariables.TryFind(name) with
             | Some var ->
@@ -226,7 +226,7 @@ type Builder<'I, 'O>() =
                     | None | Some DerivedPatterns.Unit -> expr
                     | Some x -> FsExpr.Sequential(x, expr)
                 node.Expr <- FsExpr.Lambda(lambdaVar, FsExpr.Sequential(newBody, oneWay))
-            | _ -> invalidArg "node" "node.Expr is not a OneWayLambda."
+            | _ -> invalidArg (nameof node) "node.Expr is not a OneWayLambda."
 
         /// node の最初に expr を挿入する。
         /// 挿入できる条件を満たさない場合は、ノードを作成する。
@@ -244,7 +244,7 @@ type Builder<'I, 'O>() =
                         node.Expr <- FsExpr.Lambda(lambdaVar, FsExpr.Sequential(expr, oneWay))
                     | _, Patterns.Lambda (lambdaVar, body) ->
                         node.Expr <- FsExpr.Lambda(lambdaVar, FsExpr.Sequential(expr, body))
-                    | _ -> invalidArg "node" "node.Expr is not a lambda."
+                    | _ -> invalidArg (nameof node) "node.Expr is not a lambda."
                 node
 
         /// 2つの NodeOrExpr を連結する
@@ -561,7 +561,7 @@ type Builder<'I, 'O>() =
                     let right = bindingToNode xs
                     connectNodeOrExpr (left, right)
 
-                | [] -> invalidArg "bindings" "bindings is empty."
+                | [] -> invalidArg (nameof bindings) "bindings is empty."
 
             connectNodeOrExpr (bindingToNode bindings, createCfgOrExpr (body, kind))
 

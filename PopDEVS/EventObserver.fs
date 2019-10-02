@@ -41,7 +41,7 @@ let connectBoxed (coupledModel: CoupledModelBuilder<_, _>)
     let model =
         match coupledModel.Components.TryFind(observee) with
         | Some x -> x
-        | None -> invalidArg "observee" "observee is not a component of the coupled model."
+        | None -> invalidArg (nameof observee) "observee is not a component of the coupled model."
     coupledModel.Connect(
         observee, observer,
         (fun event -> Some {

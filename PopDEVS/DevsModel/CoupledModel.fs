@@ -9,7 +9,7 @@ module internal CoupledModelHelper =
     let getInner (model: DevsModel) =
         match model.Inner with
         | BoxedModel.Coupled x -> x
-        | _ -> invalidArg "model" "The speficied model is not a valid CoupledModel"
+        | _ -> invalidArg (nameof model) "The speficied model is not a valid CoupledModel"
 
 type CoupledModel<'I, 'O> internal (model) =
     inherit DevsModel<'I, 'O>(model)
@@ -55,8 +55,8 @@ type CoupledModelBuilder<'I, 'O> internal
     let boxedTransFunc transFunc event = transFunc (unbox event) |> Option.map box
 
     let addTranslation (src, dst, transFunc) =
-        validateComponent "src" src
-        validateComponent "dst" dst
+        validateComponent (nameof src) src
+        validateComponent (nameof dst) dst
         if src = dst then raise (ArgumentException("src and dst are the same ID."))
 
         match translations.TryFind(src) with
@@ -114,14 +114,14 @@ type CoupledModelBuilder<'I, 'O> internal
     /// <summary>入力イベントに対する変換規則を追加します。</summary>
     member __.AddInputTranslation(dst: ComponentReference<'a, _>, transFunc: 'I -> 'a option) =
         let dst = dst.Id
-        validateComponent "dst" dst
+        validateComponent (nameof dst) dst
 
         inputTranslations.[dst] <- boxedTransFunc transFunc
 
     /// <summary>出力イベントに対する変換規則を追加します。</summary>
     member __.AddOutputTranslation(src: ComponentReference<_, 'a>, transFunc: 'a -> 'O option) =
         let src = src.Id
-        validateComponent "src" src
+        validateComponent (nameof src) src
 
         outputTranslations.[src] <- boxedTransFunc transFunc
 
