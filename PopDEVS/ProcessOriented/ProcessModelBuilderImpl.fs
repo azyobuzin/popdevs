@@ -11,7 +11,7 @@ type private FsExpr<'T> = FSharp.Quotations.Expr<'T>
 type private FsVar = FSharp.Quotations.Var
 
 [<ReferenceEquality>]
-type internal StateVar =
+type internal MutableVar =
     { FsVar: FsVar
       /// 外部からキャプチャした変数なら、その値を代入
       CapturedValue: obj option
@@ -19,39 +19,20 @@ type internal StateVar =
       mutable IsEscaped: bool }
 
 [<ReferenceEquality>]
-type internal CfgNode =    
+type internal MutableNode =    
     { /// 前回のイベントの戻り値を受け取って、処理を行い、次に遷移する辺のインデックスを返す式
       /// 'a -> int * WaitCondition<'I, 'O, 'b> option
       mutable Expr: FsExpr
       /// 複数の入力辺が存在する可能性があるか
       mutable HasMultipleIncomingEdges: bool
       mutable ReturnsWaitCondition: bool
-      Edges: List<CfgNode> }
+      Edges: List<MutableNode> }
 
 let internal newNode (expr, returnsWaitCondition) =
     { Expr = expr
-      Edges = List<CfgNode>()
+      Edges = List<MutableNode>()
       HasMultipleIncomingEdges = false
       ReturnsWaitCondition = returnsWaitCondition }
-
-let internal printGraph (rootNode: CfgNode) =
-    let nodes = List<CfgNode>()
-    let rec traverse node =
-        if not (nodes.Contains(node)) then
-            nodes.Add(node)
-            node.Edges |> Seq.iter traverse
-    traverse rootNode
-
-    for i, node in Seq.indexed nodes do
-        let firstLine =
-            sprintf "=== Node %d%s ===" i
-                (if node.ReturnsWaitCondition then " (Wait)" else "")
-        let edgeNumbers = node.Edges |> Seq.map (fun n -> nodes.IndexOf(n))
-        printf "%s\n%A\nEdges: %s\n%s\n\n"
-            firstLine
-            node.Expr
-            (String.Join(", ", edgeNumbers))
-            (String('=', firstLine.Length))
 
 /// CfgNode.Expr の戻り値の種類
 type internal NodeBehavior =
@@ -63,23 +44,23 @@ type internal NodeBehavior =
     | WaitCondition
 
 type internal NodeOrExpr =
-    | Node of (CfgNode * CfgNode)
+    | Node of (MutableNode * MutableNode)
     | Expr of FsExpr
 
 type internal CfgEnv =
     { /// 外部からキャプチャした変数
-      CapturedVariables: Dictionary<string, StateVar>
+      CapturedVariables: Dictionary<string, MutableVar>
       /// コンピュテーション式内で定義された変数
-      Variables: Dictionary<FsVar, StateVar> }
+      Variables: Dictionary<FsVar, MutableVar> }
 
 let internal newEnv () =
-    { CapturedVariables = new Dictionary<string, StateVar>()
-      Variables = new Dictionary<FsVar, StateVar>() }
+    { CapturedVariables = new Dictionary<string, MutableVar>()
+      Variables = new Dictionary<FsVar, MutableVar>() }
 
-type BuilderResult<'I, 'O> internal (cfg: ControlFlowGraph.Graph) =
+type BuilderResult<'I> internal (cfg: ControlFlowGraph.Graph) =
     member _.ControlFlowGraph = cfg
 
-type Builder<'I, 'O>() =
+type Builder<'I>() =
     let doNotCall () =
         invalidOp "Do not call methods of Builder from your code."
 
@@ -676,7 +657,6 @@ type Builder<'I, 'O>() =
 
         let rootNode, _ = createCfg (expr, Unit)
         reduceCfg rootNode
-        printGraph rootNode
 
         raise (NotImplementedException())
         //BuilderResult<'I, 'O>(tree)
