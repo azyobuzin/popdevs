@@ -10,14 +10,12 @@ type private FsVar = FSharp.Quotations.Var
 /// 状態として記憶されるべき変数
 [<ReferenceEquality>]
 type Variable =
-    { Name: string
-      Type: Type
+    { /// 式中でこの変数を表すのに使用する `FSharp.Quotations.Var`
+      FsVar: FsVar
       /// 外部からキャプチャした変数なら、その値
       CapturedValue: obj option
       /// ラムダ式にキャプチャされる変数か
-      IsEscaped: bool
-      /// 式中でこの変数を表すのに使用する `FSharp.Quotations.Var`
-      FsVar: FsVar }
+      IsEscaped: bool }
 
 [<ReferenceEquality>]
 type Node =
@@ -42,6 +40,10 @@ let sprintGraph graph =
         let node = graph.Nodes.[i]
         let firstLine = sprintf "=== Node %d ===" i
         sb.AppendLine(firstLine)
+            .Append(node.LambdaParameter.Name)
+            .AppendLine(" ->")
+            .AppendLine(string node.Expr)
+            .Append("Edges: ")
             .AppendLine(String.Join(", ", node.Edges))
             .Append('=', firstLine.Length)
             .AppendLine().AppendLine() |> ignore

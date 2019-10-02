@@ -2,6 +2,7 @@ module PopDEVS.ProcessOriented.ProcessModelBuilderImpl
 
 open System
 open System.Collections.Generic
+open System.Collections.Immutable
 open FSharp.Quotations
 open FSharp.Reflection
 open PopDEVS
@@ -119,6 +120,7 @@ type Builder<'I>() =
                                CapturedValue = Some value
                                IsEscaped = false }
                 env.CapturedVariables.Add(name, newVar)
+                env.Variables.Add(fsVar, newVar)
                 newVar
 
         /// let された変数を env に追加する
@@ -288,6 +290,7 @@ type Builder<'I>() =
                                 failwith "The lambda parameter is referenced."
 
                             // rightFirst の前に、代入する式を挿入する
+                            rightFirst.LambdaParameter <- funcParam
                             rightFirst.Expr <- FsExpr.Sequential(assignExpr, rightFirst.Expr) |> excast
 
                             connect (leftLast, rightFirst)
@@ -435,6 +438,7 @@ type Builder<'I>() =
             | ExprShape.ShapeVar var -> Expr (FsExpr.Var(var))
 
             | ExprShape.ShapeLambda (var, expr) ->
+                // TODO: ValueWithName を拾う
                 expr.GetFreeVars() |> Seq.iter markAsEscaped
                 Expr (FsExpr.Lambda(var, expr))
 
@@ -626,7 +630,7 @@ type Builder<'I>() =
                             failwith "nextBody refers to the lambda argument."
 
                         // ノードの書き換え
-                        node.Expr <- FsExpr.Sequential(body, node.Expr) |> excast
+                        node.Expr <- FsExpr.Sequential(body, nextNode.Expr) |> excast
                         node.ReturnsWaitCondition <- nextNode.ReturnsWaitCondition
 
                         node.Edges.Clear()
@@ -646,8 +650,57 @@ type Builder<'I>() =
                 | _ -> ()
                 i <- i + 1
 
+        /// `ControlFlowGraph.Graph` に変換する
+        let createImmutableGraph (env, root) : ControlFlowGraph.Graph =
+            let nodes =
+                let nodeDic = Dictionary()
+                let mutable index = 0
+
+                let rec traverse node =
+                    if not (nodeDic.ContainsKey(node)) then
+                        nodeDic.Add(node, index)
+                        index <- index + 1
+                        node.Edges |> Seq.iter traverse
+                traverse root
+
+                let nodesBuilder = ImmutableArray.CreateBuilder(nodeDic.Count)
+                nodesBuilder.Count <- nodeDic.Count
+
+                let edgesBuilder = ImmutableArray.CreateBuilder(0)
+
+                for kvp in nodeDic do
+                    let mutNode = kvp.Key
+                    let index = kvp.Value
+
+                    edgesBuilder.Capacity <- mutNode.Edges.Count
+                    mutNode.Edges
+                        |> Seq.map (fun x -> nodeDic.[x])
+                        |> edgesBuilder.AddRange
+
+                    let imNode: ControlFlowGraph.Node =
+                        { Index = index
+                          LambdaParameter = mutNode.LambdaParameter
+                          Expr = mutNode.Expr
+                          HasMultipleIncomingEdges = mutNode.HasMultipleIncomingEdges
+                          Edges = edgesBuilder.MoveToImmutable() }
+                    nodesBuilder.[index] <- imNode
+
+                nodesBuilder.MoveToImmutable()
+
+            let vars =
+                let mutVars = env.Variables.Values
+                let variablesBuilder = ImmutableArray.CreateBuilder(mutVars.Count)
+                let toImmutableVar x : ControlFlowGraph.Variable =
+                    { FsVar = x.FsVar
+                      CapturedValue = x.CapturedValue
+                      IsEscaped = x.IsEscaped }
+                variablesBuilder.AddRange(Seq.map toImmutableVar mutVars)
+                variablesBuilder.MoveToImmutable()
+
+            { Variables = vars; Nodes = nodes }
+
         let rootNode, _ = createCfg (expr, Unit)
         reduceCfg rootNode
 
-        raise (NotImplementedException())
-        //BuilderResult<'I, 'O>(tree)
+        let graph = createImmutableGraph (env, rootNode)
+        BuilderResult<'I>(graph)
