@@ -435,12 +435,22 @@ type Builder<'I>() =
             | Patterns.TryWith _ -> raise (new NotSupportedException("TryWith"))
             | Patterns.WhileLoop _ -> raise (new NotSupportedException("WhileLoop"))
 
-            | ExprShape.ShapeVar var -> Expr (FsExpr.Var(var))
+            | ExprShape.ShapeVar _ as expr -> Expr expr
 
-            | ExprShape.ShapeLambda (var, expr) ->
-                // TODO: ValueWithName を拾う
-                expr.GetFreeVars() |> Seq.iter markAsEscaped
-                Expr (FsExpr.Lambda(var, expr))
+            | ExprShape.ShapeLambda (_, body) as expr ->
+                // ラムダ式内で参照された変数はエスケープとしてマーク
+                let rec traverse = function
+                    | Patterns.ValueWithName x ->
+                        let var = recordCapturedVar x
+                        var.IsEscaped <- true
+                    | ExprShape.ShapeVar var ->
+                        markAsEscaped var
+                    | ExprShape.ShapeLambda (_, x) ->
+                        traverse x
+                    | ExprShape.ShapeCombination (_, exprs) ->
+                        List.iter traverse exprs
+                traverse body
+                Expr expr
 
             | ExprShape.ShapeCombination (shape, args) ->
                 let blocks = List()
