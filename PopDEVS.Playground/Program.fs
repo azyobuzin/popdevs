@@ -4,7 +4,7 @@ open PopDEVS.ProcessOriented
 let main argv =
     let x =
         let env = Unchecked.defaultof<ProcessEnv<int, unit>>
-        processModel<int, unit> {
+        processModel<int> {
             let mutable i = 1
             while i <= 9 do
                 let! v = ProcessEnv.receiveEvent (fun x -> Some x.Event) env

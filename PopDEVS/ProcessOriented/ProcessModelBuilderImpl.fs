@@ -20,16 +20,27 @@ type internal MutableVar =
 
 [<ReferenceEquality>]
 type internal MutableNode =    
-    { /// 前回のイベントの戻り値を受け取って、処理を行い、次に遷移する辺のインデックスを返す式
-      /// 'a -> int * WaitCondition<'I, 'O, 'b> option
-      mutable Expr: FsExpr
+    { /// 前回のイベントの戻り値を受け取る obj 型変数
+      mutable LambdaParameter: FsVar
+      /// 処理を行い、次に遷移する辺のインデックスを返す式
+      mutable Expr: FsExpr<int * obj option>
       /// 複数の入力辺が存在する可能性があるか
       mutable HasMultipleIncomingEdges: bool
       mutable ReturnsWaitCondition: bool
       Edges: List<MutableNode> }
 
-let internal newNode (expr, returnsWaitCondition) =
-    { Expr = expr
+/// `FSharp.Quotations.Expr` を `FSharp.Quotations.Expr<int * obj option>` に変換する
+let private excast (source: FsExpr) =
+    match source with
+    | :? FsExpr<int * obj option> as x -> x
+    | x -> Expr.Cast<int * obj option>(x)
+
+let internal newNode (param: FsVar, expr, returnsWaitCondition) =
+    if not (obj.Equals(param.Type, typeof<obj>)) then
+        invalidArg (nameof param) "param.Type is not obj"
+
+    { LambdaParameter = param
+      Expr = expr |> excast
       Edges = List<MutableNode>()
       HasMultipleIncomingEdges = false
       ReturnsWaitCondition = returnsWaitCondition }
@@ -138,23 +149,18 @@ type Builder<'I>() =
                 // fun _ ->
                 //     expr
                 //     0, None
-                let lambda = FsExpr.Lambda(discardObjVar (), FsExpr.Sequential(expr, oneWay))
-                let node = newNode (lambda, false)
+                let body = FsExpr.Sequential(expr, oneWay)
+                let node = newNode (discardObjVar(), body, false)
                 node
             | Assign var ->
                 // fun _ ->
                 //     var <- expr
                 //     0, None
-                let lambda =
-                    FsExpr.Lambda(
-                        discardObjVar (),
-                        FsExpr.Sequential(
-                            FsExpr.VarSet(var, expr),
-                            oneWay))
-                let node = newNode (lambda, false)
+                let body = FsExpr.Sequential(FsExpr.VarSet(var, expr), oneWay)
+                let node = newNode (discardObjVar(), body, false)
                 node
             | WaitCondition ->
-                let node = newNode (<@ fun _ -> 0, Some %(boxExpr expr) @>, true)
+                let node = newNode (discardObjVar(), <@ 0, Some %(boxExpr expr) @>, true)
                 node
 
         /// Sequential で連結された最後の式と、それ以外に分離する
@@ -177,26 +183,23 @@ type Builder<'I>() =
                 | _ -> None
             | _ -> None
 
-        let (|OneWayLambda|_|) expr =
-            match expr with
-            | Patterns.Lambda (lambdaVar, lambdaBody) ->
-                let body, last = splitLastExpr lambdaBody
-                match last with
-                | OneWayExpr -> Some (lambdaVar, body)
-                | _ -> None
+        let (|OneWayBody|_|) expr =
+            let body, last = splitLastExpr expr
+            match last with
+            | OneWayExpr -> Some body
             | _ -> None
         
         /// node の最後に expr を挿入する
         let appendExpr expr node =
             match expr, node.Expr with
             | DerivedPatterns.Unit, _ -> ()
-            | _, OneWayLambda (lambdaVar, body) ->
+            | _, OneWayBody body ->
                 let newBody =
                     match body with
                     | None | Some DerivedPatterns.Unit -> expr
                     | Some x -> FsExpr.Sequential(x, expr)
-                node.Expr <- FsExpr.Lambda(lambdaVar, FsExpr.Sequential(newBody, oneWay))
-            | _ -> invalidArg (nameof node) "node.Expr is not a OneWayLambda."
+                node.Expr <- FsExpr.Sequential(newBody, oneWay) |> excast
+            | _ -> invalidArg (nameof node) "node.Expr is not a OneWayBody."
 
         /// node の最初に expr を挿入する。
         /// 挿入できる条件を満たさない場合は、ノードを作成する。
@@ -210,11 +213,10 @@ type Builder<'I>() =
             else
                 match expr, node.Expr with
                     | DerivedPatterns.Unit, _ -> ()
-                    | _, OneWayLambda (lambdaVar, (None | Some DerivedPatterns.Unit)) ->
-                        node.Expr <- FsExpr.Lambda(lambdaVar, FsExpr.Sequential(expr, oneWay))
-                    | _, Patterns.Lambda (lambdaVar, body) ->
-                        node.Expr <- FsExpr.Lambda(lambdaVar, FsExpr.Sequential(expr, body))
-                    | _ -> invalidArg (nameof node) "node.Expr is not a lambda."
+                    | _, OneWayBody (None | Some DerivedPatterns.Unit) ->
+                        node.Expr <- FsExpr.Sequential(expr, oneWay) |> excast
+                    | _, x ->
+                        node.Expr <- FsExpr.Sequential(expr, x) |> excast
                 node
 
         /// 2つの NodeOrExpr を連結する
@@ -236,11 +238,15 @@ type Builder<'I>() =
                 Node (leftFirst, rightLast)
 
         let doNothingNode () =
-            newNode (FsExpr.Lambda(discardObjVar (), oneWay), false)
+            newNode (discardObjVar(), oneWay, false)
 
         let ensureWaitConditionType (ty: Type) =
             if ty.FullName <> "PopDEVS.ProcessOriented.WaitCondition`2" then
                 failwith "The type of the expression is not WaitCondition<'I, 'R>."
+
+        /// `node.Expr` が `node.LambdaParameter` を参照しているならば `true` を返す
+        let refToParam node =
+            node.Expr.GetFreeVars() |> Seq.contains node.LambdaParameter
 
         let rec createCfg (expr, kind) =
             match createCfgOrExpr (expr, kind) with
@@ -278,14 +284,11 @@ type Builder<'I>() =
 
                         match createCfgOrExpr (body, kind) with
                         | Node (rightFirst, rightLast) ->
+                            if refToParam rightFirst then
+                                failwith "The lambda parameter is referenced."
+
                             // rightFirst の前に、代入する式を挿入する
-                            match rightFirst.Expr with
-                            | Patterns.Lambda (lambdaVar, rightFirstBody) ->
-                                if rightFirstBody.GetFreeVars() |> Seq.contains lambdaVar then
-                                    failwith "The lambda parameter is referenced."
-                                rightFirst.Expr <-
-                                    FsExpr.Lambda(funcParam, FsExpr.Sequential(assignExpr, rightFirstBody))
-                            | _ -> failwith "rightFirst.Expr is not a lambda."
+                            rightFirst.Expr <- FsExpr.Sequential(assignExpr, rightFirst.Expr) |> excast
 
                             connect (leftLast, rightFirst)
                             Node (leftFirst, rightLast)
@@ -324,8 +327,7 @@ type Builder<'I>() =
                                             assignExpr,
                                             <@ 0, Some %(boxExpr bodyExpr) @>)
                                     e, true
-                            let lambda = FsExpr.Lambda(funcParam, nodeExpr)
-                            let rightNode = newNode (lambda, returnsWaitCondition)
+                            let rightNode = newNode (funcParam, nodeExpr, returnsWaitCondition)
                             connect (leftLast, rightNode)
                             Node (leftLast, rightNode)
                     else
@@ -407,8 +409,8 @@ type Builder<'I>() =
                         let falseTuple = createCfg (falseExpr, Assign waitCondVar)
                         let joinNode =
                             let varExpr = boxExpr (FsExpr.Var(waitCondVar))
-                            let lambda = <@ fun _ -> 0, Some %varExpr @>
-                            newNode (lambda, true)
+                            let body = <@ 0, Some %varExpr @>
+                            newNode (discardObjVar(), body, true)
                         trueTuple, falseTuple, joinNode
 
                 connect (testLast, falseFirst)
@@ -444,8 +446,8 @@ type Builder<'I>() =
                     match createCfgOrExpr (argExpr, Assign lastArgVar) with
                     | Node (nodeFirst, nodeLast) ->
                         match nodeLast.Expr with
-                        | OneWayLambda _ -> ()
-                        | _ -> failwith "nodeLast.Expr is not a OneWayLambda."
+                        | OneWayBody _ -> ()
+                        | _ -> failwith "nodeLast.Expr is not a OneWayBody."
 
                         let otherExprs = currentBlock.ToArray()
                         currentBlock.Clear()
@@ -491,14 +493,13 @@ type Builder<'I>() =
                         ExprShape.RebuildShapeCombination(shape, List.ofSeq rebuiltArgs)
 
                     // 最後のノードに式を追加する
-                    let lambdaVar, (nodeExpr, returnsWaitCondition) =
+                    let nodeExpr, returnsWaitCondition =
                         match assignNodeLast.Expr with
-                        | OneWayLambda (lambdaVar, body) ->
+                        | OneWayBody body ->
                             let newBody =
                                 match body with
                                 | Some x -> FsExpr.Sequential(x, rebuiltExpr)
                                 | None -> rebuiltExpr
-                            lambdaVar,
                             match kind with
                             | Unit ->
                                 FsExpr.Sequential(newBody, oneWay), false
@@ -506,9 +507,9 @@ type Builder<'I>() =
                                 FsExpr.Sequential(FsExpr.VarSet(var, newBody), oneWay), false
                             | WaitCondition ->
                                 <@@ 0, Some %(boxExpr newBody) @@>, true
-                        | _ -> failwith "assignNodeLast.Expr is not a OneWayLambda."
+                        | _ -> failwith "assignNodeLast.Expr is not a OneWayBody."
 
-                    assignNodeLast.Expr <- FsExpr.Lambda(lambdaVar, nodeExpr)
+                    assignNodeLast.Expr <- nodeExpr |> excast
                     assignNodeLast.ReturnsWaitCondition <- returnsWaitCondition
                     Node (assignNodeFirst, assignNodeLast)
 
@@ -546,15 +547,12 @@ type Builder<'I>() =
             let firstNode, lastNode = createCfg (cond, Assign condVar)
             let lastNode =
                 match lastNode.Expr with
-                | OneWayLambda (lambdaVar, (None | Some DerivedPatterns.Unit)) ->
+                | OneWayBody (None | Some DerivedPatterns.Unit) ->
                     // body がないので、 condVar によって分岐する式に完全に置き換える
                     addVar condVar
-                    lastNode.Expr <-
-                        FsExpr.Lambda(
-                            lambdaVar,
-                            <@ (if %condVarExpr then 1 else 0), None @>)
+                    lastNode.Expr <- <@ (if %condVarExpr then 1 else 0), None @>
                     lastNode
-                | OneWayLambda (lambdaVar, Some body) ->
+                | OneWayBody (Some body) ->
                     let proc, lastExpr = splitLastExpr body
                     match lastExpr with
                     | Patterns.VarSet (setVar, setExpr) when setVar = condVar ->
@@ -564,21 +562,17 @@ type Builder<'I>() =
                             match proc with
                             | Some x -> FsExpr.Sequential(x, returnExpr)
                             | None -> returnExpr
-                        lastNode.Expr <- FsExpr.Lambda(lambdaVar,newBody)
+                        lastNode.Expr <- newBody |> excast
                     | _ ->
                         // condVar によって分岐する
                         addVar condVar
-                        lastNode.Expr <-
-                            FsExpr.Lambda(
-                                lambdaVar,
-                                FsExpr.Sequential(
-                                    body,
-                                     <@ (if %condVarExpr then 1 else 0), None @>))
+                        let newBody = FsExpr.Sequential(body, <@@ (if %condVarExpr then 1 else 0), None @@>)
+                        lastNode.Expr <- newBody |> excast                            
                     lastNode
                 | _ ->
                     addVar condVar
-                    let lambda = <@ fun _ -> (if %condVarExpr then 1 else 0), None @>
-                    let condNode = newNode (lambda, false)
+                    let newBody = <@ (if %condVarExpr then 1 else 0), None @>
+                    let condNode = newNode (discardObjVar(), newBody, false)
                     connect (lastNode, condNode)
                     condNode
 
@@ -608,7 +602,7 @@ type Builder<'I>() =
                 match nodes.[i] with
                 | Some node when node.Edges.Count = 1 && not node.ReturnsWaitCondition ->
                     match node.Expr with
-                    | OneWayLambda(lambdaVar, (None | Some DerivedPatterns.Unit)) ->
+                    | OneWayBody (None | Some DerivedPatterns.Unit) ->
                         // 何もしないノードなので、スキップできる
                         let nextNode = node.Edges.[0]
                         let nextNodeIncomingEdges = incomingEdges.[nodes.IndexOf(Some nextNode)]
@@ -623,20 +617,17 @@ type Builder<'I>() =
                         nodes.[i] <- None
                         incomingEdges.[i].Clear()
 
-                    | OneWayLambda(lambdaVar, Some body) when not node.Edges.[0].HasMultipleIncomingEdges ->
+                    | OneWayBody (Some body) when not node.Edges.[0].HasMultipleIncomingEdges ->
                         // 次のノードと連結できる
                         let nextNode = node.Edges.[0]
                         let nextNodeIndex = nodes.IndexOf(Some nextNode)
 
-                        match nextNode.Expr with
-                        | Patterns.Lambda (nextLambdaVar, nextBody) ->
-                            if nextBody.GetFreeVars() |> Seq.contains nextLambdaVar then
-                                failwith "nextBody refers to the lambda argument."
+                        if refToParam nextNode then
+                            failwith "nextBody refers to the lambda argument."
 
-                            // ノードの書き換え
-                            node.Expr <- FsExpr.Lambda(lambdaVar, FsExpr.Sequential(body, nextBody))
-                            node.ReturnsWaitCondition <- nextNode.ReturnsWaitCondition
-                        | _ -> failwith "nextNode.Expr is not a lambda."
+                        // ノードの書き換え
+                        node.Expr <- FsExpr.Sequential(body, node.Expr) |> excast
+                        node.ReturnsWaitCondition <- nextNode.ReturnsWaitCondition
 
                         node.Edges.Clear()
                         node.Edges.AddRange(nextNode.Edges)
@@ -650,8 +641,8 @@ type Builder<'I>() =
                                 if not (incomingSet.Add(node)) then
                                     failwith "Duplicate edge"
 
-                    | OneWayLambda _ -> ()
-                    | _ -> failwith "node.Expr is not a OneWayLambda."
+                    | OneWayBody _ -> ()
+                    | _ -> failwith "node.Expr is not a OneWayBody."
                 | _ -> ()
                 i <- i + 1
 

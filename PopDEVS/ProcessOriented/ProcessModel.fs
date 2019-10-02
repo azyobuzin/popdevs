@@ -4,8 +4,8 @@ open PopDEVS
 
 [<AutoOpen>]
 module ProcessModelBuilder =
-    let processModel<'I, 'O> = ProcessModelBuilderImpl.Builder<'I, 'O>()
+    let processModel<'I> = ProcessModelBuilderImpl.Builder<'I>()
     
 module ProcessModel =
-    let createAtomicModel<'I, 'O> (processModel: ProcessEnv<'I, 'O> -> ProcessModelBuilderImpl.BuilderResult<'I, 'O>) =
+    let createAtomicModel<'I, 'O> (processModel: ProcessEnv<'I, 'O> -> ProcessModelBuilderImpl.BuilderResult<'I>) =
         raise (System.NotImplementedException()) :> AtomicModel<'I, 'O>
