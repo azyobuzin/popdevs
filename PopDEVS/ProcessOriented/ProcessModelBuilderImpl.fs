@@ -69,9 +69,6 @@ let internal newEnv () =
     { CapturedVariables = new Dictionary<string, MutableVar>()
       Variables = new Dictionary<FsVar, MutableVar>() }
 
-type BuilderResult<'I> internal (cfg: ControlFlowGraph.Graph) =
-    member _.ControlFlowGraph = cfg
-
 type Builder<'I>() =
     let doNotCall () =
         invalidOp "Do not call methods of Builder from your code."
@@ -94,6 +91,7 @@ type Builder<'I>() =
     member __.Quote(_: Expr<unit>) : Expr<unit> =
         doNotCall ()
 
+    /// <summary><paramref name="expr" /> から制御フローグラフを作成します。</summary>
     member this.Run(expr: Expr<unit>) =
         let env = newEnv ()
 
@@ -713,4 +711,4 @@ type Builder<'I>() =
         reduceCfg rootNode
 
         let graph = createImmutableGraph (env, rootNode)
-        BuilderResult<'I>(graph)
+        ProcessModelBuilderResult<'I>(graph)
