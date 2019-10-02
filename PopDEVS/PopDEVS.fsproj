@@ -3,6 +3,7 @@
   <PropertyGroup>
     <TargetFramework>netstandard2.0</TargetFramework>
     <DocumentationFile>bin\$(Configuration)\$(TargetFramework)\$(AssemblyName).xml</DocumentationFile>
+    <LangVersion>preview</LangVersion>
   </PropertyGroup>
 
   <ItemGroup>
@@ -17,6 +18,9 @@
     <Compile Include="Sequential\SequentialRunner.fs" />
     <Compile Include="ProcessOriented\WaitCondition.fs" />
     <Compile Include="ProcessOriented\ProcessEnv.fs" />
+    <Compile Include="ProcessOriented\ControlFlowGraph.fs" />
+    <Compile Include="ProcessOriented\ProcessModelBuilderImpl.fs" />
+    <Compile Include="ProcessOriented\ProcessModel.fs" />
   </ItemGroup>
 
   <ItemGroup>
