@@ -6,38 +6,17 @@ open FSharp.Quotations
 open FSharp.Reflection
 open PopDEVS
 
-type internal FsExpr = FSharp.Quotations.Expr
-type internal FsExpr<'T> = FSharp.Quotations.Expr<'T>
-type internal FsVar = FSharp.Quotations.Var
-
-type Placeholder<'I, 'O, 'V> = struct end
+type private FsExpr = FSharp.Quotations.Expr
+type private FsExpr<'T> = FSharp.Quotations.Expr<'T>
+type private FsVar = FSharp.Quotations.Var
 
 [<ReferenceEquality>]
 type internal StateVar =
-    { Name: string
-      Type: Type
+    { FsVar: FsVar
       /// 外部からキャプチャした変数なら、その値を代入
       CapturedValue: obj option
       /// ラムダ式にキャプチャされる変数か
-      mutable IsEscaped: bool
-      mutable ReferenceCount: int
-      mutable Index: int option }
-
-let internal newCapturedVar (name, varType, value) =
-    { Name = name
-      Type = varType
-      CapturedValue = Some value
-      IsEscaped = false
-      ReferenceCount = 0
-      Index = None }
-
-let internal newVar (name, varType) =
-    { Name = name
-      Type = varType
-      CapturedValue = None
-      IsEscaped = false
-      ReferenceCount = 0
-      Index = None }
+      mutable IsEscaped: bool }
 
 [<ReferenceEquality>]
 type internal CfgNode =    
@@ -97,7 +76,8 @@ let internal newEnv () =
     { CapturedVariables = new Dictionary<string, StateVar>()
       Variables = new Dictionary<FsVar, StateVar>() }
 
-type BuilderResult<'I, 'O> internal () = class end
+type BuilderResult<'I, 'O> internal (cfg: ControlFlowGraph.Graph) =
+    member _.ControlFlowGraph = cfg
 
 type Builder<'I, 'O>() =
     let doNotCall () =
@@ -132,20 +112,29 @@ type Builder<'I, 'O>() =
             match env.CapturedVariables.TryFind(name) with
             | Some var ->
                 // すでに記録されているので、アサーション
-                if not (obj.Equals(varType, var.Type)) then
-                    failwithf "Type mismatch (Expected: %O, Actual: %O)" var.Type varType
+                if not (obj.Equals(varType, var.FsVar.Type)) then
+                    failwithf "Type mismatch (Expected: %O, Actual: %O)" var.FsVar.Type varType
 
                 let existingValue = var.CapturedValue.Value
                 if not (obj.Equals(value, existingValue)) then
                     failwithf "Value mismatch (Expected: %O, Actual: %O)" existingValue value
 
+                var
             | None ->
                 // 新規追加
-                env.CapturedVariables.Add(name, newCapturedVar (name, varType, value))
+                let fsVar = FsVar(name, varType)
+                let newVar = { FsVar = fsVar
+                               CapturedValue = Some value
+                               IsEscaped = false }
+                env.CapturedVariables.Add(name, newVar)
+                newVar
 
         /// let された変数を env に追加する
         let addVar (var: FsVar) =
-            env.Variables.Add(var, newVar (var.Name, var.Type))
+            let x = { FsVar = var
+                      CapturedValue = None
+                      IsEscaped = false }
+            env.Variables.Add(var, x)
 
         let markAsEscaped (var: FsVar) =
             match env.Variables.TryFind(var) with
@@ -452,9 +441,9 @@ type Builder<'I, 'O>() =
 
             | Patterns.Sequential (left, right) -> transCombine (left, right, kind)
 
-            | Patterns.ValueWithName x as expr ->
-                recordCapturedVar x
-                Expr expr
+            | Patterns.ValueWithName x ->
+                let var = recordCapturedVar x
+                Expr (FsExpr.Var(var.FsVar))
 
             | Patterns.TryFinally _ -> raise (new NotSupportedException("TryFinally"))
             | Patterns.TryWith _ -> raise (new NotSupportedException("TryWith"))
