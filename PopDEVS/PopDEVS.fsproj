@@ -19,8 +19,10 @@
     <Compile Include="ProcessOriented\WaitCondition.fs" />
     <Compile Include="ProcessOriented\ProcessEnv.fs" />
     <Compile Include="ProcessOriented\ControlFlowGraph.fs" />
+    <Compile Include="ProcessOriented\MutableCfg.fs" />
     <Compile Include="ProcessOriented\ProcessModelBuilderResult.fs" />
     <Compile Include="ProcessOriented\ProcessModelBuilderImpl.fs" />
+    <Compile Include="ProcessOriented\StateReducer.fs" />
     <Compile Include="ProcessOriented\ProcessModel.fs" />
   </ItemGroup>
 
