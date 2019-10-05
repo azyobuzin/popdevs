@@ -3,6 +3,7 @@ module internal PopDEVS.ProcessOriented.StateReducer
 open System.Collections.Generic
 open FSharp.Quotations
 open MutableCfg
+open PopDEVS
 
 type ReduceEnv =
     { IncomingEdges: Dictionary<MutableNode, HashSet<MutableNode>> }
@@ -84,19 +85,15 @@ let tryReduceIfOrWhile env (startNode: MutableNode) =
             left, getNextNode left, right, getNextNode right
 
         let (|InterNode|_|) node =
-            if node.ReturnsWaitCondition ||
-               node.Edges.Count <> 1 ||
-               env.IncomingEdges.[node].Count <> 1 ||
-               refToParam node then
-                None
-            else
-                Some ()
+            let rejectCond =
+                node.ReturnsWaitCondition ||
+                node.Edges.Count <> 1 ||
+                env.IncomingEdges.[node].Count <> 1 ||
+                refToParam node
+            rejectCond |> not |> boolToOption
 
         let (|Incoming|_|) count node =
-            if env.IncomingEdges.[node].Count = count then
-                Some ()
-            else
-                None
+            env.IncomingEdges.[node].Count = count |> boolToOption
 
         match nodesTuple with
         | InterNode as left, Some (Incoming 2 as x), (InterNode as right), Some y when x = y ->

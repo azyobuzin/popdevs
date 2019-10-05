@@ -7,7 +7,7 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <Compile Include="ImmutableCollection.fs" />
+    <Compile Include="Utils.fs" />
     <Compile Include="InputEventBuffer.fs" />
     <Compile Include="SimEnv.fs" />
     <Compile Include="DevsModel\DevsModel.fs" />
