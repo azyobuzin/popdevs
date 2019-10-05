@@ -47,8 +47,8 @@ let rec splitLastExpr = function
 
 let (|OneWayBody|_|) expr =
     let (|OneWayExpr|_|) = function
-        | Patterns.NewTuple [edgeIndexExpr; Patterns.NewUnionCase (caseInfo, [])]
-            when caseInfo.DeclaringType = typeof<obj option> && caseInfo.Name = "None" ->
+        | Patterns.NewTuple [edgeIndexExpr; waitCondOptionExpr]
+            when waitCondOptionExpr = <@@ None @@> ->
             match edgeIndexExpr with
             | Patterns.ValueWithName _ ->
                 // ValueWithName は定数なので DerivedPatterns.Int32 にマッチするが
@@ -79,26 +79,32 @@ let refToParam node =
 
 let connectMutNode (left, right) = left.Edges.Add(right)
 
+let enumerateNodes rootNode =
+    let nodeList = List()
+    let nodeSet = HashSet()
+
+    let rec traverse node =
+        if nodeSet.Add(node) then
+            nodeList.Add(node)
+            node.Edges |> Seq.iter traverse
+
+    traverse rootNode
+    nodeList :> IReadOnlyList<MutableNode>
+
 let createImmutableGraph (vars, rootNode) : ImmutableGraph =
     let nodes =
-        let nodeDic = Dictionary()
-        let mutable index = 0
+        let nodes = enumerateNodes rootNode
+        let nodeDic =
+            let dic = Dictionary(nodes.Count)
+            for i in 0 .. nodes.Count - 1 do
+                dic.Add(nodes.[i], i)
+            dic
 
-        let rec traverse node =
-            if not (nodeDic.ContainsKey(node)) then
-                nodeDic.Add(node, index)
-                index <- index + 1
-                node.Edges |> Seq.iter traverse
-        traverse rootNode
-
-        let nodesBuilder = ImmutableArray.CreateBuilder(nodeDic.Count)
-        nodesBuilder.Count <- nodeDic.Count
-
+        let nodesBuilder = ImmutableArray.CreateBuilder(nodes.Count)
         let edgesBuilder = ImmutableArray.CreateBuilder(0)
 
-        for kvp in nodeDic do
-            let mutNode = kvp.Key
-            let index = kvp.Value
+        for index in 0 .. nodes.Count - 1 do
+            let mutNode = nodes.[index]
 
             edgesBuilder.Capacity <- mutNode.Edges.Count
             mutNode.Edges
@@ -111,7 +117,7 @@ let createImmutableGraph (vars, rootNode) : ImmutableGraph =
                   Expr = mutNode.Expr
                   HasMultipleIncomingEdges = mutNode.HasMultipleIncomingEdges
                   Edges = edgesBuilder.MoveToImmutable() }
-            nodesBuilder.[index] <- imNode
+            nodesBuilder.Add(imNode)
 
         nodesBuilder.MoveToImmutable()
 

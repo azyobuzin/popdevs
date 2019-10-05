@@ -213,6 +213,14 @@ type Builder<'I>() =
 
                 match arg2 with
                 | Patterns.Lambda (resultVar, body) ->
+                    // (fun _arg1 -> let x = _arg1 in ...) の形の場合、不要な代入を取り除く
+                    let resultVar, body =
+                        match body with
+                        | Patterns.Let (letVar, Patterns.Var bindingVar, inExpr)
+                            when bindingVar = resultVar && not (inExpr.GetFreeVars() |> Seq.contains resultVar) ->
+                            letVar, inExpr
+                        | _ -> resultVar, body
+
                     // resultVar が使われているなら、 resultVar に結果を代入するノードを作る。
                     // そうでないなら、結果を無視して、単純なノードを作る。
                     if body.GetFreeVars() |> Seq.contains resultVar then
@@ -531,21 +539,14 @@ type Builder<'I>() =
 
         /// 分岐しないノードをまとめる
         let reduceCfg rootNode =
-            let nodes =
-                let nodes = HashSet()
-                let rec traverse node =
-                    if nodes.Add(node) then
-                        node.Edges |> Seq.iter traverse
-                traverse rootNode
-                nodes |> Seq.toArray
+            let nodes = enumerateNodes rootNode
             let incomingEdges =
                 nodes
-                |> Seq.map (fun x ->
+                |> mapToList (fun x ->
                     nodes |> Seq.filter (fun y -> y.Edges.Contains(x))
                           |> HashSet)
-                |> List
             // Convert to a mutable list
-            let nodes = nodes |> Seq.map Some |> List
+            let nodes = mapToList Some nodes
 
             // ループしながら nodes を書き換えるので、インデックス操作でやっていく
             let mutable i = 0

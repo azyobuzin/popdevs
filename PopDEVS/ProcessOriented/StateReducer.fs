@@ -25,11 +25,23 @@ let toUnitExpr (expr: FsExpr<int * obj option>) =
     | OneWayBody None -> <@ () @>
     | _ -> invalidArg (nameof expr) "expr is not OneWayBody"
 
+let replaceEdges env (oldNode, newNode) =
+    newNode.Edges.Clear()
+    newNode.Edges.AddRange(oldNode.Edges)
+
+    for dst in newNode.Edges do
+        let dstIncomingEdges = env.IncomingEdges.[dst]
+        if not (dstIncomingEdges.Remove(oldNode)) then
+            failwith "The edge has already been removed."
+        if not (dstIncomingEdges.Add(newNode)) then
+            failwith "Duplicate edge"
+
 let reduceIf (env: ReduceEnv) (cond, left, right, merge) =
     let newCondBody =
         let condBody, condLast = splitLastExpr cond.Expr
         match condLast with
-        | Patterns.IfThenElse (condExpr, DerivedPatterns.Int32 1, DerivedPatterns.Int32 0) ->
+        | Patterns.NewTuple [Patterns.IfThenElse (condExpr, DerivedPatterns.Int32 1, DerivedPatterns.Int32 0); waitCondOptionExpr]
+            when waitCondOptionExpr = <@@ None @@> ->
             let expr =
                 FsExpr.Sequential(
                     FsExpr.IfThenElse(condExpr,
@@ -43,16 +55,16 @@ let reduceIf (env: ReduceEnv) (cond, left, right, merge) =
 
     cond.Expr <- newCondBody |> excast
     cond.ReturnsWaitCondition <- merge.ReturnsWaitCondition
-    cond.Edges.Clear()
-    cond.Edges.AddRange(merge.Edges)
 
     env.RemoveNodes([| left; right; merge |])
+    replaceEdges env (merge, cond)
 
 let reduceWhile (env: ReduceEnv) (cond, loopBody, exit) =
     let newCondBody =
         let condBody, condLast = splitLastExpr cond.Expr
         match condLast with
-        | Patterns.IfThenElse (condExpr, DerivedPatterns.Int32 1, DerivedPatterns.Int32 0) ->
+        | Patterns.NewTuple [Patterns.IfThenElse (condExpr, DerivedPatterns.Int32 1, DerivedPatterns.Int32 0); waitCondOptionExpr]
+            when waitCondOptionExpr = <@@ None @@> ->
             let expr =
                 FsExpr.Sequential(
                     FsExpr.WhileLoop(condExpr, toUnitExpr loopBody.Expr),
@@ -64,10 +76,13 @@ let reduceWhile (env: ReduceEnv) (cond, loopBody, exit) =
 
     cond.Expr <- newCondBody |> excast
     cond.ReturnsWaitCondition <- exit.ReturnsWaitCondition
-    cond.Edges.Clear()
-    cond.Edges.AddRange(exit.Edges)
 
     env.RemoveNodes([| loopBody; exit |])
+    replaceEdges env (exit, cond)
+
+    if not (env.IncomingEdges.[cond].Remove(loopBody)) then
+        failwith "A edge from loopBody to cond has already been removed."
+    cond.HasMultipleIncomingEdges <- env.IncomingEdges.[cond].Count >= 2
 
 let tryReduceIfOrWhile env (startNode: MutableNode) =
     // reduceCfg によって簡略化されたグラフなので、2ホップ読めば安全にまとめられるか判断できる
