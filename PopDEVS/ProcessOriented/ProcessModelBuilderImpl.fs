@@ -187,10 +187,6 @@ type Builder<'I>() =
             if ty.FullName <> "PopDEVS.ProcessOriented.WaitCondition`2" then
                 failwith "The type of the expression is not WaitCondition<'I, 'R>."
 
-        /// `node.Expr` が `node.LambdaParameter` を参照しているならば `true` を返す
-        let refToParam node =
-            node.Expr.GetFreeVars() |> Seq.contains node.LambdaParameter
-
         let rec createCfg (expr, kind) =
             match createCfgOrExpr (expr, kind) with
             | Node nodes -> nodes

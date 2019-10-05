@@ -73,6 +73,10 @@ let (|ReturnsWaitCondition|_|) expr =
     | _ ->
         invalidArg (nameof expr) "The last expression is not NewTuple."
 
+/// `node.Expr` が `node.LambdaParameter` を参照しているならば `true` を返す
+let refToParam node =
+    node.Expr.GetFreeVars() |> Seq.contains node.LambdaParameter
+
 let connectMutNode (left, right) = left.Edges.Add(right)
 
 let createImmutableGraph (vars, rootNode) : ImmutableGraph =
