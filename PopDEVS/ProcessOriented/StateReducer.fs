@@ -13,6 +13,17 @@ type ReduceEnv =
             if not (this.IncomingEdges.Remove(x)) then
                 failwith "The node has already been removed."
 
+let private replaceEdges env (oldNode, newNode) =
+    newNode.Edges.Clear()
+    newNode.Edges.AddRange(oldNode.Edges)
+                
+    for dst in newNode.Edges do
+        let dstIncomingEdges = env.IncomingEdges.[dst]
+        if not (dstIncomingEdges.Remove(oldNode)) then
+            failwith "The edge has already been removed."
+        if not (dstIncomingEdges.Add(newNode)) then
+            failwith "Duplicate edge"
+
 let private toUnitExpr (expr: FsExpr<int * obj option>) =
     match expr with
     | OneWayBody (Some body) ->
@@ -24,17 +35,6 @@ let private toUnitExpr (expr: FsExpr<int * obj option>) =
         FsExpr.Cast(newBody)
     | OneWayBody None -> <@ () @>
     | _ -> invalidArg (nameof expr) "expr is not OneWayBody"
-
-let replaceEdges env (oldNode, newNode) =
-    newNode.Edges.Clear()
-    newNode.Edges.AddRange(oldNode.Edges)
-
-    for dst in newNode.Edges do
-        let dstIncomingEdges = env.IncomingEdges.[dst]
-        if not (dstIncomingEdges.Remove(oldNode)) then
-            failwith "The edge has already been removed."
-        if not (dstIncomingEdges.Add(newNode)) then
-            failwith "Duplicate edge"
 
 let reduceIf (env: ReduceEnv) (cond, left, right, merge) =
     let newCondBody =
@@ -169,11 +169,11 @@ let reduceExitNodes rootNode =
 
     let removeExitNode (node, index) =
         let retTupleVar = FsVar("retTuple", typeof<int * obj option>, false)
-        let retTupleExpr = FsExpr.Cast<int * obj option>(FsExpr.Var(retTupleVar))
+        let retTupleExpr = FsExpr.Var(retTupleVar) |> FsExpr.Cast<int * obj option>
         let edgeIndexVar = FsVar("edgeIndex", typeof<int>, false)
-        let edgeIndexExpr = FsExpr.Cast<int>(FsExpr.Var(edgeIndexVar))
-        let retTupleSnd = FsExpr.Cast<obj option>(FsExpr.TupleGet(retTupleExpr, 1))
-        let indexExpr = FsExpr.Cast<int>(FsExpr.Value(index))
+        let edgeIndexExpr = FsExpr.Var(edgeIndexVar) |> FsExpr.Cast<int>
+        let retTupleSnd = FsExpr.TupleGet(retTupleExpr, 1) |> FsExpr.Cast<obj option>
+        let indexExpr = FsExpr.Value(index) |> FsExpr.Cast<int>
         let otherEdgeExpr =
             if index < node.Edges.Count - 1 then
                 // 削除する辺が、最後の辺でないならば、返す辺のインデックスを書き換える必要がある
@@ -235,9 +235,9 @@ let combineOneWayNodes rootNode =
             then
                 let nextNode = node.Edges.[0]
                 let retTupleVar = FsVar("retTuple", typeof<int * obj option>, false)
-                let retTupleExpr = FsExpr.Cast<int * obj option>(FsExpr.Var(retTupleVar))
-                let retTupleFst = FsExpr.Cast<int>(FsExpr.TupleGet(retTupleExpr, 0))
-                let retTupleSnd = FsExpr.Cast<obj option>(FsExpr.TupleGet(retTupleExpr, 1))
+                let retTupleExpr = FsExpr.Var(retTupleVar) |> FsExpr.Cast<int * obj option>
+                let retTupleFst = FsExpr.TupleGet(retTupleExpr, 0) |> FsExpr.Cast<int>
+                let retTupleSnd = FsExpr.TupleGet(retTupleExpr, 1) |> FsExpr.Cast<obj option>
                 node.Expr <-
                     // let retTuple = (original expr)
                     // if fst retTuple = 0 then
