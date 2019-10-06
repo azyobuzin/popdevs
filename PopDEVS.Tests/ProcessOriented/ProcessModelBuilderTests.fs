@@ -18,13 +18,13 @@ let private createImmutableNode (index, hasMultipleIncomingEdges, edges) (expr: 
     | _ -> invalidArg (nameof expr) "expr is not a lambda expression."
 
 let private expectNodeEqual (actual: ImmutableNode) (expected: ImmutableNode) index =
-    let expectEqual actual expected propName =
-        let msg =
-            String.Format("actualNodes.[{0}].{1} = expectedNodes.[{0}].{1}",
-                          index, propName)
-        Expect.equal actual expected msg
+    let msg propName =
+        String.Format("actualNodes.[{0}].{1} = expectedNodes.[{0}].{1}",
+                      index, propName)
 
-    expectEqual actual.Index expected.Index (nameof expected.Index)
+    Expect.equal
+        actual.Index expected.Index
+        (msg (nameof expected.Index))
 
     // ラムダパラメータを書き換えて、 Equals が成立するようにする
     let actualExpr =
@@ -35,17 +35,18 @@ let private expectNodeEqual (actual: ImmutableNode) (expected: ImmutableNode) in
                 None
         actual.Expr.Substitute(substitution)
 
-    expectEqual actualExpr expected.Expr.Raw (nameof expected.Expr)
+    Expect.equal
+        actualExpr expected.Expr.Raw
+        (msg (nameof expected.Expr))
     
-    expectEqual
+    Expect.equal
         actual.HasMultipleIncomingEdges
         expected.HasMultipleIncomingEdges
-        (nameof expected.HasMultipleIncomingEdges)
+        (msg (nameof expected.HasMultipleIncomingEdges))
 
-    expectEqual
-        (Set.ofSeq actual.Edges)
-        (Set.ofSeq expected.Edges)
-        (nameof expected.Edges)
+    Expect.sequenceEqual
+        actual.Edges expected.Edges
+        (msg (nameof expected.Edges))
 
 [<Tests>]
 let tests =

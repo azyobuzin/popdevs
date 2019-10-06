@@ -50,7 +50,6 @@ let tests =
             incomingEdges.Add(nextNode2, HashSet([mergeNode]))
 
             let env = { StateReducer.IncomingEdges = incomingEdges }
-
             StateReducer.reduceIf env (condNode, leftNode, rightNode, mergeNode)
 
             Expect.hasLength incomingEdges 3 "leftNode, rightNode and mergeNode are removed"

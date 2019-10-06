@@ -2,4 +2,6 @@ open Expecto
 
 [<EntryPoint>]
 let main argv =
-    runTestsInAssembly defaultConfig argv
+    let writeResults = TestResults.writeNUnitSummary ("TestResults.xml", "PopDEVS.Tests")
+    let config = defaultConfig.appendSummaryHandler writeResults
+    runTestsInAssembly config argv

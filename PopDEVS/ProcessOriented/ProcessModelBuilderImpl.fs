@@ -376,9 +376,9 @@ type Builder<'I>() =
                 let var = recordCapturedVar x
                 Expr (FsExpr.Var(var.FsVar))
 
-            | Patterns.TryFinally _ -> raise (new NotSupportedException("TryFinally"))
-            | Patterns.TryWith _ -> raise (new NotSupportedException("TryWith"))
-            | Patterns.WhileLoop _ -> raise (new NotSupportedException("WhileLoop"))
+            | Patterns.TryFinally _ -> raise (NotSupportedException("TryFinally"))
+            | Patterns.TryWith _ -> raise (NotSupportedException("TryWith"))
+            | Patterns.WhileLoop _ -> raise (NotSupportedException("WhileLoop"))
 
             | ExprShape.ShapeVar _ as expr -> Expr expr
 
