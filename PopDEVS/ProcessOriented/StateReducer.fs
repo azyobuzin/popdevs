@@ -13,7 +13,7 @@ type ReduceEnv =
             if not (this.IncomingEdges.Remove(x)) then
                 failwith "The node has already been removed."
 
-let toUnitExpr (expr: FsExpr<int * obj option>) =
+let private toUnitExpr (expr: FsExpr<int * obj option>) =
     match expr with
     | OneWayBody (Some body) ->
         let newBody =
@@ -41,7 +41,7 @@ let reduceIf (env: ReduceEnv) (cond, left, right, merge) =
         let condBody, condLast = splitLastExpr cond.Expr
         match condLast with
         | Patterns.NewTuple [Patterns.IfThenElse (condExpr, DerivedPatterns.Int32 1, DerivedPatterns.Int32 0); waitCondOptionExpr]
-            when waitCondOptionExpr = <@@ None @@> ->
+          when waitCondOptionExpr = <@@ None @@> ->
             let expr =
                 FsExpr.Sequential(
                     FsExpr.IfThenElse(condExpr,
@@ -64,7 +64,7 @@ let reduceWhile (env: ReduceEnv) (cond, loopBody, exit) =
         let condBody, condLast = splitLastExpr cond.Expr
         match condLast with
         | Patterns.NewTuple [Patterns.IfThenElse (condExpr, DerivedPatterns.Int32 1, DerivedPatterns.Int32 0); waitCondOptionExpr]
-            when waitCondOptionExpr = <@@ None @@> ->
+          when waitCondOptionExpr = <@@ None @@> ->
             let expr =
                 FsExpr.Sequential(
                     FsExpr.WhileLoop(condExpr, toUnitExpr loopBody.Expr),
@@ -147,11 +147,124 @@ let rec reduceBranches rootNode =
     // 変化がなくなるまで繰り返す
     if reduced then reduceBranches rootNode
 
-// TODO: if から終端ノードへの遷移を簡略化する
-// TODO: 1ノード内でしか使われていない変数を、 let に置き換える
+/// if から終端ノードへの遷移を省略する
+let reduceExitNodes rootNode =
+    let visitedNodes = HashSet()
 
-//let reduceToStateMachine rootNode =    
+    let isRemovableExitNode node =
+        (not node.HasMultipleIncomingEdges) &&
+        node.Edges.Count = 0 &&
+        (not <| visitedNodes.Contains(node))
+
+    /// 戻り値の辺インデックスを不正な値（-1）に書き換える
+    let rewriteToReturnInvalidIndex expr =
+        let body, last = splitLastExpr expr
+        match last with
+        | Patterns.NewTuple [DerivedPatterns.Int32 0; waitCondExpr] ->
+            let newLast = FsExpr.NewTuple([FsExpr.Value(-1); waitCondExpr])
+            match body with
+            | Some x -> FsExpr.Sequential(x, newLast)
+            | None -> newLast
+        | _ -> failwith "node does not returns 0 as the index of edge."
+
+    let removeExitNode (node, index) =
+        let retTupleVar = FsVar("retTuple", typeof<int * obj option>, false)
+        let retTupleExpr = FsExpr.Cast<int * obj option>(FsExpr.Var(retTupleVar))
+        let edgeIndexVar = FsVar("edgeIndex", typeof<int>, false)
+        let edgeIndexExpr = FsExpr.Cast<int>(FsExpr.Var(edgeIndexVar))
+        let retTupleSnd = FsExpr.Cast<obj option>(FsExpr.TupleGet(retTupleExpr, 1))
+        let indexExpr = FsExpr.Cast<int>(FsExpr.Value(index))
+        let otherEdgeExpr =
+            if index < node.Edges.Count - 1 then
+                // 削除する辺が、最後の辺でないならば、返す辺のインデックスを書き換える必要がある
+                <@
+                    if %edgeIndexExpr > %indexExpr
+                    then %edgeIndexExpr - 1, %retTupleSnd
+                    else %retTupleExpr @>
+            else
+                retTupleExpr
+        let exitNodeExpr = rewriteToReturnInvalidIndex node.Edges.[index].Expr
+        node.Expr <-
+            // let retTuple = (original expr)
+            // let edgeIndex, _ = retTuple
+            // if edgeIndex = index then
+            //     (exit node expr)
+            // elif edgeIndex > index then
+            //     edgeIndex - 1, snd retTuple
+            // else
+            //     retTuple
+            FsExpr.Let(
+                retTupleVar,
+                node.Expr,
+                FsExpr.Let(
+                    edgeIndexVar,
+                    FsExpr.TupleGet(retTupleExpr, 0),
+                    FsExpr.IfThenElse(
+                        <@@ %edgeIndexExpr = %indexExpr @@>,
+                        exitNodeExpr,
+                        otherEdgeExpr)))
+            |> excast
+        node.Edges.RemoveAt(index)
+
+    let rec traverse node =
+        if visitedNodes.Add(node) then
+            if not (node.ReturnsWaitCondition) then
+                let rec tryReduce index =
+                    if index < node.Edges.Count then
+                        if isRemovableExitNode node.Edges.[index] then
+                            removeExitNode (node, index)
+                            tryReduce index
+                        else
+                            tryReduce (index + 1)
+                tryReduce 0
+
+            node.Edges |> Seq.iter traverse
+    traverse rootNode
+
+let combineOneWayNodes rootNode =
+    // 終端ノードを消去したことで、結合可能になったノードが増えたかもしれない。
+    // ProcessModelBuilderImpl.reduceCfg と同じ処理だが、式の形が
+    // OneWayBody ではなくなっているので、一般的な方法で結合する。
+
+    let visitedNodes = HashSet()
+    let rec traverse node =
+        if visitedNodes.Add(node) then
+            if (not node.ReturnsWaitCondition) &&
+                node.Edges.Count = 1 &&
+                (not node.Edges.[0].HasMultipleIncomingEdges)
+            then
+                let nextNode = node.Edges.[0]
+                let retTupleVar = FsVar("retTuple", typeof<int * obj option>, false)
+                let retTupleExpr = FsExpr.Cast<int * obj option>(FsExpr.Var(retTupleVar))
+                let retTupleFst = FsExpr.Cast<int>(FsExpr.TupleGet(retTupleExpr, 0))
+                let retTupleSnd = FsExpr.Cast<obj option>(FsExpr.TupleGet(retTupleExpr, 1))
+                node.Expr <-
+                    // let retTuple = (original expr)
+                    // if fst retTuple = 0 then
+                    //     (next node expr)
+                    // else
+                    //     -1, snd retTuple
+                    FsExpr.Let(
+                        retTupleVar,
+                        node.Expr,
+                        FsExpr.IfThenElse(
+                            <@@ %retTupleFst = 0 @@>,
+                            nextNode.Expr,
+                            <@@ -1, %retTupleSnd @@>))
+                    |> excast
+                node.ReturnsWaitCondition <- nextNode.ReturnsWaitCondition
+                node.Edges.Clear()
+                node.Edges.AddRange(nextNode.Edges)
+
+            node.Edges |> Seq.iter traverse
+    traverse rootNode
+
+// TODO: 1ノード内でしか使われていない変数を、 let に置き換える
 
 /// 制御フローグラフから、 Atomic モデルとして必要な状態のノードだけになるよう、ノードの結合を行います。
 let reduceGraph (graph: ImmutableGraph) : ImmutableGraph =
+    let rootNode = (createMutableNodes graph).[0]
+    reduceBranches rootNode
+    reduceExitNodes rootNode
+    combineOneWayNodes rootNode
     raise (System.NotImplementedException())
