@@ -36,6 +36,21 @@ let private toUnitExpr (expr: FsExpr<int * obj option>) =
     | OneWayBody None -> <@ () @>
     | _ -> invalidArg (nameof expr) "expr is not OneWayBody"
 
+/// ノードの入力辺を求める
+let makeIncomingDic rootNode =
+    let dic = Dictionary()
+    let rec traverse node =
+        if not (dic.ContainsKey(node)) then
+            dic.Add(node, HashSet())
+            node.Edges |> Seq.iter traverse
+    traverse rootNode
+
+    for node in dic.Keys do
+        for edge in node.Edges do
+            dic.[edge].Add(node) |> ignore
+
+    dic
+
 let reduceIf (env: ReduceEnv) (cond, left, right, merge) =
     let newCondBody =
         let condBody, condLast = splitLastExpr cond.Expr
@@ -123,20 +138,10 @@ let tryReduceIfOrWhile env (startNode: MutableNode) =
 
 /// 待機を行わない if, while 文をすべて簡略化する
 let rec reduceBranches rootNode =
-    let env =
-        // 各ノードの入力を求める
-        let incomingEdges = Dictionary()
-        let rec traverse node =
-            if not (incomingEdges.ContainsKey(node)) then
-                incomingEdges.Add(node, HashSet())
-                node.Edges |> Seq.iter traverse
-        for node in incomingEdges.Keys do
-            for edge in node.Edges do
-                incomingEdges.[edge].Add(node) |> ignore
-        { IncomingEdges = incomingEdges }
-
+    let env = { IncomingEdges = makeIncomingDic rootNode }
     let visitedNodes = HashSet()
     let mutable reduced = false
+
     let rec traverse node =
         if visitedNodes.Add(node) then
             if tryReduceIfOrWhile env node then
@@ -177,10 +182,9 @@ let reduceExitNodes rootNode =
         let otherEdgeExpr =
             if index < node.Edges.Count - 1 then
                 // 削除する辺が、最後の辺でないならば、返す辺のインデックスを書き換える必要がある
-                <@
-                    if %edgeIndexExpr > %indexExpr
-                    then %edgeIndexExpr - 1, %retTupleSnd
-                    else %retTupleExpr @>
+                <@ if %edgeIndexExpr > %indexExpr
+                   then %edgeIndexExpr - 1, %retTupleSnd
+                   else %retTupleExpr @>
             else
                 retTupleExpr
         let exitNodeExpr = rewriteToReturnInvalidIndex node.Edges.[index].Expr
