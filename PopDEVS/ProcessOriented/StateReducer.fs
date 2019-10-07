@@ -265,78 +265,18 @@ let combineOneWayNodes rootNode =
             node.Edges |> Seq.iter traverse
     traverse rootNode
 
-let rec private seqExprToList = function
-    | Patterns.Sequential (left, right) ->
-        (seqExprToList left) @ (seqExprToList right)
-    | x -> [x]
+let private defauleOfMethodInfo =
+    match <@@ Unchecked.defaultof<obj> @@> with
+    | Patterns.Call (_, methodInfo, _) ->
+        methodInfo.GetGenericMethodDefinition()
+    | _ -> failwith "unreachable"
 
-type private VarRewriteMode =
-    | NoRef
-    | ReadVar
-    /// 局所的に書き換えることができる
-    | LocalRewrite of Expr * Expr list * mut: bool
-    /// 局所的な書き換えができなさそうなので、最初に default を代入する
-    | GlobalRewrite
-
-/// var を node 内で let 式として定義する
-let rewriteVarToLet (node, var) =
-    let rec checkRewriteMode expr =
-        seqExprToList expr |> checkSeqExprs
-    and checkSeqExprs = function
-        | x :: xs ->
-            match x with
-            | Patterns.VarSet (v, e) ->
-                let ret = checkRewriteMode e
-
-                if v = var then
-                    match ret with
-                    | NoRef ->
-                        let writeCount = List.sumBy (countWrite var) xs
-                        LocalRewrite (e, xs, writeCount > 0)
-                    | _ ->
-                        // 代入式の中で触れられているので、安全側に倒す
-                        GlobalRewrite
-                else
-                    ret
-            | ExprShape.ShapeVar v ->
-                if v = var then ReadVar else NoRef
-            | ExprShape.ShapeCombination (_, exprs) ->
-                let rec f = function
-                    | x :: xs ->
-                        match checkRewriteMode x with
-                        | NoRef -> f xs
-                        | ReadVar ->
-                            match f xs with
-                            | NoRef | ReadVar -> ReadVar
-                            | xsMode -> xsMode
-                        | LocalRewrite _ as xMode ->
-                            match f xs with
-                            | NoRef | ReadVar -> xMode
-                            | _ -> GlobalRewrite
-                        | GlobalRewrite -> GlobalRewrite
-                    | [] -> NoRef
-                f exprs
-            | ExprShape.ShapeLambda _ ->
-                // ラムダの中から参照されている場合は、 IsEscaped = true なので
-                // 探索する必要はない
-                NoRef
-        | [] -> NoRef
-    and countWrite var =
-        let rec f = function
-            | Patterns.VarSet (v, e) ->
-                let wc = f e
-                if v = var then wc + 1 else wc
-            | ExprShape.ShapeCombination (_, exprs) ->
-                List.sumBy f exprs
-            | _ -> 0
-        f
-
-    match checkRewriteMode node.Expr with
-    | LocalRewrite (letExpr, letBody, _) ->
-        () // TODO
-    | GlobalRewrite ->
-        () // TODO
-    | _ -> failwith "Cannot find VarSet expression"
+let rewriteVarToLet (node, var: ImmutableVar) =
+    node.Expr <-
+        FsExpr.Let(var.FsVar,
+            FsExpr.Call(defauleOfMethodInfo.MakeGenericMethod(var.FsVar.Type), []),
+            node.Expr)
+        |> excast
 
 /// 1ノード内でしか使われていない変数を、 let に置き換える
 let reduceVariables (vars: seq<ImmutableVar>, rootNode) =
@@ -371,4 +311,5 @@ let reduceGraph (graph: ImmutableGraph) : ImmutableGraph =
     reduceBranches rootNode
     reduceExitNodes rootNode
     combineOneWayNodes rootNode
-    raise (System.NotImplementedException())
+    let vars = reduceVariables(graph.Variables, rootNode)
+    createImmutableGraph(vars, rootNode)
