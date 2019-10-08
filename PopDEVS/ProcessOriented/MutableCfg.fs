@@ -31,6 +31,11 @@ type MutableNode =
       mutable ReturnsWaitCondition: bool
       Edges: List<MutableNode> }
 
+// TODO: こうするべきだった案
+// LambdaParameter: FsVar option
+// IncomingEdges: HashSet<MutableNode>
+// OutgoingEdges: List<(MutableNode * returnsWaitCondition: bool)>
+
 /// `FSharp.Quotations.Expr` を `FSharp.Quotations.Expr<int * obj option>` に変換する
 let excast (source: FsExpr) =
     match source with
