@@ -1,6 +1,7 @@
 module PopDEVS.Tests.ProcessOriented.StateReducerTests
 
 open System.Collections.Generic
+open System.Collections.Immutable
 open Expecto
 open FSharp.Quotations
 open PopDEVS.ProcessOriented
@@ -279,10 +280,91 @@ let private reduceExitNodesTests =
         }
     ]
 
+let private reduceGraphTests =
+    let variableSet (graph: ImmutableGraph) =
+        graph.Variables
+        |> Seq.map (fun x -> x.FsVar.Name, x.FsVar.Type, x.CapturedValue, x.IsEscaped)
+        |> ImmutableHashSet.CreateRange
+
+    testList "reduceGraph" [
+        test "example 1" {
+            let returnInputWaitCondition = Unchecked.defaultof<WaitCondition<int, int>>
+            let unitWaitCondition = Unchecked.defaultof<WaitCondition<int, unit>>
+
+            let builderResult =
+                processModel {
+                    let mutable i = 1
+                    while i <= 9 do
+                        let! v = returnInputWaitCondition
+                        if v % 2 = 0 then
+                            do! unitWaitCondition
+                        i <- i + 1
+                }
+
+            let graph = builderResult.ControlFlowGraph
+            Expect.hasLength graph.Nodes 7 "graph has 7 nodes"
+
+            let expectedVars = [
+                "i", typeof<int>, None, false
+                "v", typeof<int>, None, false
+            ]
+            Expect.isTrue ((variableSet graph).SetEquals(expectedVars)) "variables are i and v"
+
+            let reducedGraph = StateReducer.reduceGraph graph
+            Expect.hasLength reducedGraph.Nodes 5 "2 nodes are removed"
+
+            let expectedVars = ["i", typeof<int>, None, false]
+            Expect.isTrue ((variableSet reducedGraph).SetEquals(expectedVars)) "v is removed"
+        }
+
+        test "example 2" {
+            let boolWaitCond = Unchecked.defaultof<WaitCondition<int, bool>>
+            let unitWaitCond = Unchecked.defaultof<WaitCondition<int, unit>>
+            let firstCond = true
+            let thirdCond = false
+
+            let builderResult =
+                processModel {
+                    let! secondCond =
+                        if firstCond then
+                            let msg1 = "firstCond is true"
+                            ignore msg1
+                            boolWaitCond
+                        else
+                            let msg2 = "firstCond is false"
+                            ignore msg2
+                            boolWaitCond
+
+                    if secondCond then
+                        ignore "secondCond is true"
+
+                        if thirdCond then
+                            ignore "thirdCond is true"
+
+                            let mutable i = 1
+                            while i <= 9 do
+                                ignore "loop body"
+                                do! unitWaitCond
+
+                            ignore "loop exit"
+                        else
+                            ignore "thirdCond is false"
+                            do! unitWaitCond
+                    else
+                        ignore "secondCond is false"
+                        do! unitWaitCond
+                }
+
+            let graph = builderResult.ControlFlowGraph
+            Expect.hasLength graph.Nodes 12 "initial graph has 12 nodes"
+        }
+    ]
+
 [<Tests>]
 let tests =
     testList "StateReducer" [
         reduceIfTests
         reduceWhileTests
         reduceExitNodesTests
+        reduceGraphTests
     ]

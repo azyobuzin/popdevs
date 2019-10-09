@@ -1,3 +1,5 @@
+module PopDEVS.Tests.Program
+
 open Expecto
 
 [<EntryPoint>]

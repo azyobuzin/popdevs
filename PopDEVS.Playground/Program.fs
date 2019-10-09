@@ -13,5 +13,5 @@ let main argv =
                 i <- i + 1
         }
 
-    printfn "%s" (ControlFlowGraph.sprintGraph x.ControlFlowGraph)
+    printfn "%O" x.ControlFlowGraph
     0

@@ -184,7 +184,8 @@ type Builder<'I>() =
             newNode (discardObjVar(), oneWay, false)
 
         let ensureWaitConditionType (ty: Type) =
-            if ty.FullName <> "PopDEVS.ProcessOriented.WaitCondition`2" then
+            let b = ty.IsGenericType
+            if b && ty.GetGenericTypeDefinition().FullName <> "PopDEVS.ProcessOriented.WaitCondition`2" then
                 failwith "The type of the expression is not WaitCondition<'I, 'R>."
 
         let rec createCfg (expr, kind) =
