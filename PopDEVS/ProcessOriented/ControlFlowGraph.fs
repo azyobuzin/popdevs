@@ -57,6 +57,9 @@ type Graph =
             let node = this.Nodes.[i]
             let firstLine = sprintf "=== Node %d ===" i
             sb.AppendLine(firstLine)
+                .Append("HasMultipleIncomingEdges = ")
+                .Append(node.HasMultipleIncomingEdges)
+                .AppendLine()
                 .Append(node.LambdaParameter.Name)
                 .AppendLine(" ->")
                 .AppendLine(string node.Expr)

@@ -307,13 +307,19 @@ let private reduceGraphTests =
             let expectedVars = [
                 "i", typeof<int>, None, false
                 "v", typeof<int>, None, false
+                (nameof returnInputWaitCondition), typeof<WaitCondition<int, int>>, Some (box returnInputWaitCondition), false
+                (nameof unitWaitCondition), typeof<WaitCondition<int, unit>>, Some (box unitWaitCondition), false
             ]
             Expect.isTrue ((variableSet graph).SetEquals(expectedVars)) "variables are i and v"
 
             let reducedGraph = StateReducer.reduceGraph graph
             Expect.hasLength reducedGraph.Nodes 5 "2 nodes are removed"
 
-            let expectedVars = ["i", typeof<int>, None, false]
+            let expectedVars = [
+                "i", typeof<int>, None, false
+                (nameof returnInputWaitCondition), typeof<WaitCondition<int, int>>, Some (box returnInputWaitCondition), false
+                (nameof unitWaitCondition), typeof<WaitCondition<int, unit>>, Some (box unitWaitCondition), false
+            ]
             Expect.isTrue ((variableSet reducedGraph).SetEquals(expectedVars)) "v is removed"
         }
 
@@ -356,7 +362,10 @@ let private reduceGraphTests =
                 }
 
             let graph = builderResult.ControlFlowGraph
-            Expect.hasLength graph.Nodes 12 "initial graph has 12 nodes"
+            Expect.hasLength graph.Nodes 13 "initial graph has 13 nodes"
+
+            let reducedGraph = StateReducer.reduceGraph graph
+            Expect.hasLength reducedGraph.Nodes 4 "reduced graph has 4 nodes"
         }
     ]
 
