@@ -17,6 +17,19 @@ type Variable =
       /// ラムダ式にキャプチャされる変数か
       IsEscaped: bool }
 
+    override this.ToString() =
+        let sb = StringBuilder().AppendFormat("{0}: {1}", this.FsVar.Name, this.FsVar.Type)
+        if this.CapturedValue.IsSome || this.IsEscaped then
+            sb.Append(" (") |> ignore
+            match this.CapturedValue with
+                | Some x -> sb.AppendFormat("CapturedValue = {0}", x) |> ignore
+                | None -> ()
+            if this.IsEscaped then
+                if this.CapturedValue.IsSome then sb.Append(", ") |> ignore
+                sb.Append("IsEscaped = true") |> ignore
+            sb.Append(')') |> ignore
+        sb.ToString()
+
 [<ReferenceEquality>]
 type Node =
     { Index: int
@@ -33,19 +46,26 @@ type Graph =
     { Variables: ImmutableArray<Variable>
       Nodes: ImmutableArray<Node> }
 
-let sprintGraph graph =
-    let sb = StringBuilder()
+    override this.ToString() =
+        let sb =
+            StringBuilder()
+                .AppendFormat("Variables = ")
+                .AppendLine(String.Join(", ", this.Variables))
+                .AppendLine()
 
-    for i in 0 .. graph.Nodes.Length - 1 do
-        let node = graph.Nodes.[i]
-        let firstLine = sprintf "=== Node %d ===" i
-        sb.AppendLine(firstLine)
-            .Append(node.LambdaParameter.Name)
-            .AppendLine(" ->")
-            .AppendLine(string node.Expr)
-            .Append("Edges: ")
-            .AppendLine(String.Join(", ", node.Edges))
-            .Append('=', firstLine.Length)
-            .AppendLine().AppendLine() |> ignore
+        for i = 0 to this.Nodes.Length - 1 do
+            let node = this.Nodes.[i]
+            let firstLine = sprintf "=== Node %d ===" i
+            sb.AppendLine(firstLine)
+                .Append("HasMultipleIncomingEdges = ")
+                .Append(node.HasMultipleIncomingEdges)
+                .AppendLine()
+                .Append(node.LambdaParameter.Name)
+                .AppendLine(" ->")
+                .AppendLine(string node.Expr)
+                .Append("Edges: ")
+                .AppendLine(String.Join(", ", node.Edges))
+                .Append('=', firstLine.Length)
+                .AppendLine().AppendLine() |> ignore
 
-    sb.ToString()
+        sb.ToString().TrimEnd()

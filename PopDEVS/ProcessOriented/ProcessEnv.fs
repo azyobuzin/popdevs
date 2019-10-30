@@ -17,7 +17,7 @@ type ProcessEnv<'I, 'O> internal (innerEnv: ISimEnv) =
     static member wait time (env: ProcessEnv<'I, 'O>) =
         let targetTime = (ProcessEnv.getTime env) + time
         let poll (_, env, _, _) =
-            if SimEnv.getTime env >= targetTime then Some () else None
+            SimEnv.getTime env >= targetTime |> boolToOption
         WaitCondition<'I, _>(poll)
 
     [<CompiledName("ReceiveEvent")>]

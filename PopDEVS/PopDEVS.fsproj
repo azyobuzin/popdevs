@@ -7,7 +7,8 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <Compile Include="ImmutableCollection.fs" />
+    <Compile Include="AssemblyInfo.fs" />
+    <Compile Include="Utils.fs" />
     <Compile Include="InputEventBuffer.fs" />
     <Compile Include="SimEnv.fs" />
     <Compile Include="DevsModel\DevsModel.fs" />
@@ -19,8 +20,10 @@
     <Compile Include="ProcessOriented\WaitCondition.fs" />
     <Compile Include="ProcessOriented\ProcessEnv.fs" />
     <Compile Include="ProcessOriented\ControlFlowGraph.fs" />
+    <Compile Include="ProcessOriented\MutableCfg.fs" />
     <Compile Include="ProcessOriented\ProcessModelBuilderResult.fs" />
     <Compile Include="ProcessOriented\ProcessModelBuilderImpl.fs" />
+    <Compile Include="ProcessOriented\StateReducer.fs" />
     <Compile Include="ProcessOriented\ProcessModel.fs" />
   </ItemGroup>
 

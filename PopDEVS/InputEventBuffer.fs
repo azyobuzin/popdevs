@@ -19,7 +19,7 @@ type InputEventBuffer<'a> internal (impl: IInputEventBuffer) =
         { Time = re.Time; Event = unbox re.Event }
 
     member __.Take(chooser: ReceivedEvent<'a> -> 'b option, limit: int option) =
-        impl.Take((fun x -> unboxEvent x |> chooser), limit)
+        impl.Take(unboxEvent >> chooser, limit)
 
 module InputEventBuffer =
     /// <summary>入力イベントバッファーから、条件を満たすイベントを取り出します。</summary>
@@ -41,7 +41,7 @@ module InputEventBuffer =
     /// <returns>イベントの配列。受信時刻の昇順にソートされています。同時刻のイベントについては、順番は保証されていません。</returns>
     [<CompiledName("TakeAll")>]
     let takeAll limit (inputBuf: InputEventBuffer<_>) =
-        inputBuf.Take((fun x -> Some x), limit)
+        inputBuf.Take(Some, limit)
 
     /// <summary>入力イベントバッファーから、条件を満たすイベントを、時刻を無視して取り出します。</summary>
     /// <param name="filter">条件を指定します。この関数で、シミュレーションの状態を変化させる副作用を起こしてはいけません。</param>

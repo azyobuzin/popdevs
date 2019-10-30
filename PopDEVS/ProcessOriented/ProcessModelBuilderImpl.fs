@@ -2,41 +2,12 @@ module PopDEVS.ProcessOriented.ProcessModelBuilderImpl
 
 open System
 open System.Collections.Generic
-open System.Collections.Immutable
 open FSharp.Quotations
 open FSharp.Reflection
 open PopDEVS
+open MutableCfg
 
-type private FsExpr = FSharp.Quotations.Expr
-type private FsExpr<'T> = FSharp.Quotations.Expr<'T>
-type private FsVar = FSharp.Quotations.Var
-
-[<ReferenceEquality>]
-type internal MutableVar =
-    { FsVar: FsVar
-      /// 外部からキャプチャした変数なら、その値を代入
-      CapturedValue: obj option
-      /// ラムダ式にキャプチャされる変数か
-      mutable IsEscaped: bool }
-
-[<ReferenceEquality>]
-type internal MutableNode =    
-    { /// 前回のイベントの戻り値を受け取る obj 型変数
-      mutable LambdaParameter: FsVar
-      /// 処理を行い、次に遷移する辺のインデックスを返す式
-      mutable Expr: FsExpr<int * obj option>
-      /// 複数の入力辺が存在する可能性があるか
-      mutable HasMultipleIncomingEdges: bool
-      mutable ReturnsWaitCondition: bool
-      Edges: List<MutableNode> }
-
-/// `FSharp.Quotations.Expr` を `FSharp.Quotations.Expr<int * obj option>` に変換する
-let private excast (source: FsExpr) =
-    match source with
-    | :? FsExpr<int * obj option> as x -> x
-    | x -> Expr.Cast<int * obj option>(x)
-
-let internal newNode (param: FsVar, expr, returnsWaitCondition) =
+let private newNode (param: FsVar, expr, returnsWaitCondition) =
     if not (obj.Equals(param.Type, typeof<obj>)) then
         invalidArg (nameof param) "param.Type is not obj"
 
@@ -133,8 +104,6 @@ type Builder<'I>() =
             | Some x -> x.IsEscaped <- true
             | None -> ()
 
-        let connect (left, right) = left.Edges.Add(right)
-
         let oneWay = <@ 0, None @>
         let boxExpr expr = FsExpr.Cast<obj>(FsExpr.Coerce(expr, typeof<obj>))
         let discardObjVar () = FsVar("_", typeof<obj>)
@@ -163,32 +132,6 @@ type Builder<'I>() =
                 let node = newNode (discardObjVar(), <@ 0, Some %(boxExpr expr) @>, true)
                 node
 
-        /// Sequential で連結された最後の式と、それ以外に分離する
-        let rec splitLastExpr = function
-            | Patterns.Sequential (left, right) ->
-                match splitLastExpr right with
-                | Some proc, last -> Some (FsExpr.Sequential (left, proc)), last
-                | None, last -> Some left, last
-            | x -> None, x
-
-        let (|OneWayExpr|_|) = function
-            | Patterns.NewTuple [edgeIndexExpr; Patterns.NewUnionCase (caseInfo, [])]
-                when caseInfo.DeclaringType = typeof<obj option> && caseInfo.Name = "None" ->
-                match edgeIndexExpr with
-                | Patterns.ValueWithName _ ->
-                    // ValueWithName は定数なので DerivedPatterns.Int32 にマッチするが
-                    // 定数ではなく変数として扱いたいので、先に引っ掛ける。
-                    None
-                | DerivedPatterns.Int32 0 -> Some()
-                | _ -> None
-            | _ -> None
-
-        let (|OneWayBody|_|) expr =
-            let body, last = splitLastExpr expr
-            match last with
-            | OneWayExpr -> Some body
-            | _ -> None
-        
         /// node の最後に expr を挿入する
         let appendExpr expr node =
             match expr, node.Expr with
@@ -208,7 +151,7 @@ type Builder<'I>() =
                 // 複数の入力辺を持つ（ループ）場合、このノードを操作すると
                 // ループが破壊されるので、新たにノードを作成する。
                 let leftNode = exprToNode (expr, Unit)
-                connect (leftNode, node)
+                connectMutNode (leftNode, node)
                 leftNode
             else
                 match expr, node.Expr with
@@ -234,19 +177,16 @@ type Builder<'I>() =
                 let first = tryPrependExpr left rightFirst
                 Node (first, rightLast)
             | Node (leftFirst, leftLast), Node (rightFirst, rightLast) ->
-                connect (leftLast, rightFirst)
+                connectMutNode (leftLast, rightFirst)
                 Node (leftFirst, rightLast)
 
         let doNothingNode () =
             newNode (discardObjVar(), oneWay, false)
 
         let ensureWaitConditionType (ty: Type) =
-            if ty.FullName <> "PopDEVS.ProcessOriented.WaitCondition`2" then
+            let b = ty.IsGenericType
+            if b && ty.GetGenericTypeDefinition().FullName <> "PopDEVS.ProcessOriented.WaitCondition`2" then
                 failwith "The type of the expression is not WaitCondition<'I, 'R>."
-
-        /// `node.Expr` が `node.LambdaParameter` を参照しているならば `true` を返す
-        let refToParam node =
-            node.Expr.GetFreeVars() |> Seq.contains node.LambdaParameter
 
         let rec createCfg (expr, kind) =
             match createCfgOrExpr (expr, kind) with
@@ -274,6 +214,14 @@ type Builder<'I>() =
 
                 match arg2 with
                 | Patterns.Lambda (resultVar, body) ->
+                    // (fun _arg1 -> let x = _arg1 in ...) の形の場合、不要な代入を取り除く
+                    let resultVar, body =
+                        match body with
+                        | Patterns.Let (letVar, Patterns.Var bindingVar, inExpr)
+                            when bindingVar = resultVar && not (inExpr.GetFreeVars() |> Seq.contains resultVar) ->
+                            letVar, inExpr
+                        | _ -> resultVar, body
+
                     // resultVar が使われているなら、 resultVar に結果を代入するノードを作る。
                     // そうでないなら、結果を無視して、単純なノードを作る。
                     if body.GetFreeVars() |> Seq.contains resultVar then
@@ -291,7 +239,7 @@ type Builder<'I>() =
                             rightFirst.LambdaParameter <- funcParam
                             rightFirst.Expr <- FsExpr.Sequential(assignExpr, rightFirst.Expr) |> excast
 
-                            connect (leftLast, rightFirst)
+                            connectMutNode (leftLast, rightFirst)
                             Node (leftFirst, rightLast)
 
                         | Expr bodyExpr ->
@@ -329,11 +277,11 @@ type Builder<'I>() =
                                             <@ 0, Some %(boxExpr bodyExpr) @>)
                                     e, true
                             let rightNode = newNode (funcParam, nodeExpr, returnsWaitCondition)
-                            connect (leftLast, rightNode)
+                            connectMutNode (leftLast, rightNode)
                             Node (leftLast, rightNode)
                     else
                         let rightFirst, rightLast = createCfg (body, kind)
-                        connect (leftLast, rightFirst)
+                        connectMutNode (leftLast, rightFirst)
                         Node (leftLast, rightLast)
 
                 | _ -> failwith "The second argument of the Bind call is not a lambda."
@@ -354,9 +302,9 @@ type Builder<'I>() =
                         let lastNode = doNothingNode ()
                         let (bodyFirst, bodyLast) = createCfg (arg2, Unit)
 
-                        connect (testLast, lastNode)
-                        connect (testLast, bodyFirst)
-                        connect (bodyLast, testFirst)
+                        connectMutNode (testLast, lastNode)
+                        connectMutNode (testLast, bodyFirst)
+                        connectMutNode (bodyLast, testFirst)
 
                         Node (testFirst, lastNode)
 
@@ -369,7 +317,7 @@ type Builder<'I>() =
                         // 無限ループ
                         let (bodyFirst, bodyLast) = createCfg (arg2, Unit)
                         bodyFirst.HasMultipleIncomingEdges <- true
-                        connect (bodyLast, bodyFirst)
+                        connectMutNode (bodyLast, bodyFirst)
                         Node (bodyFirst, bodyLast)
                     | DerivedPatterns.Bool false -> Expr <@ () @>
                     | _ -> createWithTestNode ()
@@ -412,12 +360,13 @@ type Builder<'I>() =
                             let varExpr = boxExpr (FsExpr.Var(waitCondVar))
                             let body = <@ 0, Some %varExpr @>
                             newNode (discardObjVar(), body, true)
+                        joinNode.HasMultipleIncomingEdges <- true
                         trueTuple, falseTuple, joinNode
 
-                connect (testLast, falseFirst)
-                connect (falseLast, joinNode)
-                connect (testLast, trueFirst)
-                connect (trueLast, joinNode)
+                connectMutNode (testLast, falseFirst)
+                connectMutNode (falseLast, joinNode)
+                connectMutNode (testLast, trueFirst)
+                connectMutNode (trueLast, joinNode)
                 Node (testFirst, joinNode)
 
             | Patterns.Let (var, value, body) -> transLet ([(var, value)], body, kind)
@@ -429,9 +378,9 @@ type Builder<'I>() =
                 let var = recordCapturedVar x
                 Expr (FsExpr.Var(var.FsVar))
 
-            | Patterns.TryFinally _ -> raise (new NotSupportedException("TryFinally"))
-            | Patterns.TryWith _ -> raise (new NotSupportedException("TryWith"))
-            | Patterns.WhileLoop _ -> raise (new NotSupportedException("WhileLoop"))
+            | Patterns.TryFinally _ -> raise (NotSupportedException("TryFinally"))
+            | Patterns.TryWith _ -> raise (NotSupportedException("TryWith"))
+            | Patterns.WhileLoop _ -> raise (NotSupportedException("WhileLoop"))
 
             | ExprShape.ShapeVar _ as expr -> Expr expr
 
@@ -487,7 +436,7 @@ type Builder<'I>() =
                     // CFG ノードを連結する
                     let assignNodeFirst, assignNodeLast =
                         let reduction (currentFirst, currentLast) (nextFirst, nextLast) =
-                            connect (currentLast, nextFirst)
+                            connectMutNode (currentLast, nextFirst)
                             currentFirst, nextLast
                         blocks |> Seq.map (fun (x, _, _, _) -> x)
                                |> Seq.reduce reduction
@@ -585,130 +534,118 @@ type Builder<'I>() =
                     addVar condVar
                     let newBody = <@ (if %condVarExpr then 1 else 0), None @>
                     let condNode = newNode (discardObjVar(), newBody, false)
-                    connect (lastNode, condNode)
+                    connectMutNode (lastNode, condNode)
                     condNode
 
             firstNode, lastNode
 
         /// 分岐しないノードをまとめる
         let reduceCfg rootNode =
-            let nodes =
-                let nodes = HashSet()
-                let rec traverse node =
-                    if nodes.Add(node) then
-                        node.Edges |> Seq.iter traverse
-                traverse rootNode
-                nodes |> Seq.toArray
+            let nodes = enumerateNodes rootNode
             let incomingEdges =
                 nodes
-                |> Seq.map (fun x ->
+                |> mapToList (fun x ->
                     nodes |> Seq.filter (fun y -> y.Edges.Contains(x))
                           |> HashSet)
-                |> List
             // Convert to a mutable list
-            let nodes = nodes |> Seq.map Some |> List
+            let nodes = mapToList Some nodes
+
+            #if DEBUG
+            for i = 0 to nodes.Count - 1 do
+                match nodes.[i], incomingEdges.[i] with
+                | Some node, edges ->
+                    if node.HasMultipleIncomingEdges <> (edges.Count > 1) then
+                        failwithf "HasMultipleIncomingEdges = %b, Count = %d"
+                            node.HasMultipleIncomingEdges
+                            edges.Count
+                | _ -> failwith "unreachable"
+            #endif
 
             // ループしながら nodes を書き換えるので、インデックス操作でやっていく
-            let mutable i = 0
-            while i < nodes.Count do
+            for i = 0 to nodes.Count - 1 do
                 match nodes.[i] with
-                | Some node when node.Edges.Count = 1 && not node.ReturnsWaitCondition ->
-                    match node.Expr with
-                    | OneWayBody (None | Some DerivedPatterns.Unit) ->
-                        // 何もしないノードなので、スキップできる
-                        let nextNode = node.Edges.[0]
-                        let nextNodeIncomingEdges = incomingEdges.[nodes.IndexOf(Some nextNode)]
+                | Some node when node.Edges.Count = 1 ->
+                    if not node.ReturnsWaitCondition then
+                        match node.Expr with
+                        | OneWayBody (None | Some DerivedPatterns.Unit) ->
+                            // 何もしないノードなので、スキップできる
+                            let nextNode = node.Edges.[0]
+                            let nextNodeIncomingEdges = incomingEdges.[nodes.IndexOf(Some nextNode)]
 
-                        for incomingNode in incomingEdges.[i] do
-                            // Edges から node への辺を削除し、 nextNode への辺を追加する
-                            incomingNode.Edges.[incomingNode.Edges.IndexOf(node)] <- nextNode
-                            if not (nextNodeIncomingEdges.Add(incomingNode)) then
-                                failwith "Duplicate edge"
-
-                        nextNode.HasMultipleIncomingEdges <- nextNodeIncomingEdges.Count > 1
-                        nodes.[i] <- None
-                        incomingEdges.[i].Clear()
-
-                    | OneWayBody (Some body) when not node.Edges.[0].HasMultipleIncomingEdges ->
-                        // 次のノードと連結できる
-                        let nextNode = node.Edges.[0]
-                        let nextNodeIndex = nodes.IndexOf(Some nextNode)
-
-                        if refToParam nextNode then
-                            failwith "nextBody refers to the lambda argument."
-
-                        // ノードの書き換え
-                        node.Expr <- FsExpr.Sequential(body, nextNode.Expr) |> excast
-                        node.ReturnsWaitCondition <- nextNode.ReturnsWaitCondition
-
-                        node.Edges.Clear()
-                        node.Edges.AddRange(nextNode.Edges)
-
-                        nodes.[nextNodeIndex] <- None
-                        incomingEdges.[nextNodeIndex].Clear()
-
-                        // incomingEdges の更新
-                        for incomingSet in incomingEdges do
-                            if incomingSet.Remove(nextNode) then
-                                if not (incomingSet.Add(node)) then
+                            for incomingNode in incomingEdges.[i] do
+                                // Edges から node への辺を削除し、 nextNode への辺を追加する
+                                incomingNode.Edges.[incomingNode.Edges.IndexOf(node)] <- nextNode
+                                if not (nextNodeIncomingEdges.Add(incomingNode)) then
                                     failwith "Duplicate edge"
 
-                    | OneWayBody _ -> ()
-                    | _ -> failwith "node.Expr is not a OneWayBody."
+                            nextNode.HasMultipleIncomingEdges <- nextNodeIncomingEdges.Count > 1
+                            nodes.[i] <- None
+                            incomingEdges.[i].Clear()
+
+                        | OneWayBody (Some body) when not node.Edges.[0].HasMultipleIncomingEdges ->
+                            // 次のノードと連結できる
+                            let nextNode = node.Edges.[0]
+                            let nextNodeIndex = nodes.IndexOf(Some nextNode)
+
+                            if refToParam nextNode then
+                                failwith "nextBody refers to the lambda argument."
+
+                            // ノードの書き換え
+                            node.Expr <- FsExpr.Sequential(body, nextNode.Expr) |> excast
+                            node.ReturnsWaitCondition <- nextNode.ReturnsWaitCondition
+
+                            node.Edges.Clear()
+                            node.Edges.AddRange(nextNode.Edges)
+
+                            nodes.[nextNodeIndex] <- None
+                            incomingEdges.[nextNodeIndex].Clear()
+
+                            // incomingEdges の更新
+                            for incomingSet in incomingEdges do
+                                if incomingSet.Remove(nextNode) then
+                                    if not (incomingSet.Add(node)) then
+                                        failwith "Duplicate edge"
+
+                        | OneWayBody _ -> ()
+                        | _ -> failwith "node.Expr is not a OneWayBody."
+
                 | _ -> ()
-                i <- i + 1
 
-        /// `ControlFlowGraph.Graph` に変換する
-        let createImmutableGraph (env, root) : ControlFlowGraph.Graph =
-            let nodes =
-                let nodeDic = Dictionary()
-                let mutable index = 0
+            (*
+            for i = 0 to nodes.Count - 1 do
+                let isDoNothingExitNode node =
+                    node.Edges.Count = 0 &&
+                        match node.Expr with
+                        | OneWayBody (None | Some DerivedPatterns.Unit) -> true
+                        | _ -> false
 
-                let rec traverse node =
-                    if not (nodeDic.ContainsKey(node)) then
-                        nodeDic.Add(node, index)
-                        index <- index + 1
-                        node.Edges |> Seq.iter traverse
-                traverse root
+                match nodes.[i] with
+                | Some node when node.Edges.Count = 1 && isDoNothingExitNode node.Edges.[0] ->
+                    let nextNode = node.Edges.[0]
+                    let nextNodeIndex = nodes.IndexOf(Some nextNode)
+                    
+                    // 遷移を行う必要がない
+                    node.Edges.Clear()
 
-                let nodesBuilder = ImmutableArray.CreateBuilder(nodeDic.Count)
-                nodesBuilder.Count <- nodeDic.Count
+                    if not (incomingEdges.[nextNodeIndex].Remove(node)) then
+                        failwith "failed to remove"
 
-                let edgesBuilder = ImmutableArray.CreateBuilder(0)
-
-                for kvp in nodeDic do
-                    let mutNode = kvp.Key
-                    let index = kvp.Value
-
-                    edgesBuilder.Capacity <- mutNode.Edges.Count
-                    mutNode.Edges
-                        |> Seq.map (fun x -> nodeDic.[x])
-                        |> edgesBuilder.AddRange
-
-                    let imNode: ControlFlowGraph.Node =
-                        { Index = index
-                          LambdaParameter = mutNode.LambdaParameter
-                          Expr = mutNode.Expr
-                          HasMultipleIncomingEdges = mutNode.HasMultipleIncomingEdges
-                          Edges = edgesBuilder.MoveToImmutable() }
-                    nodesBuilder.[index] <- imNode
-
-                nodesBuilder.MoveToImmutable()
-
-            let vars =
-                let mutVars = env.Variables.Values
-                let variablesBuilder = ImmutableArray.CreateBuilder(mutVars.Count)
-                let toImmutableVar x : ControlFlowGraph.Variable =
-                    { FsVar = x.FsVar
-                      CapturedValue = x.CapturedValue
-                      IsEscaped = x.IsEscaped }
-                variablesBuilder.AddRange(Seq.map toImmutableVar mutVars)
-                variablesBuilder.MoveToImmutable()
-
-            { Variables = vars; Nodes = nodes }
+                    match incomingEdges.[nextNodeIndex].Count with
+                    | 0 -> nodes.[nextNodeIndex] <- None // nextNode は不要
+                    | i -> nextNode.HasMultipleIncomingEdges <- i > 1
+                | _ -> ()
+            *)
 
         let rootNode, _ = createCfg (expr, Unit)
         reduceCfg rootNode
 
-        let graph = createImmutableGraph (env, rootNode)
+        let vars =
+            let toImmutableVar x : ImmutableVar =
+                { FsVar = x.FsVar
+                  CapturedValue = x.CapturedValue
+                  IsEscaped = x.IsEscaped }
+            Seq.map toImmutableVar env.Variables.Values
+
+        let graph = createImmutableGraph (vars, rootNode)
+        //printfn "%O" graph
         ProcessModelBuilderResult<'I>(graph)
