@@ -24,6 +24,7 @@
     <Compile Include="ProcessOriented\ProcessModelBuilderResult.fs" />
     <Compile Include="ProcessOriented\ProcessModelBuilderImpl.fs" />
     <Compile Include="ProcessOriented\StateReducer.fs" />
+    <Compile Include="ProcessOriented\CompiledState.fs" />
     <Compile Include="ProcessOriented\ProcessModel.fs" />
   </ItemGroup>
 

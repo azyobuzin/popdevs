@@ -611,31 +611,6 @@ type Builder<'I>() =
 
                 | _ -> ()
 
-            (*
-            for i = 0 to nodes.Count - 1 do
-                let isDoNothingExitNode node =
-                    node.Edges.Count = 0 &&
-                        match node.Expr with
-                        | OneWayBody (None | Some DerivedPatterns.Unit) -> true
-                        | _ -> false
-
-                match nodes.[i] with
-                | Some node when node.Edges.Count = 1 && isDoNothingExitNode node.Edges.[0] ->
-                    let nextNode = node.Edges.[0]
-                    let nextNodeIndex = nodes.IndexOf(Some nextNode)
-                    
-                    // 遷移を行う必要がない
-                    node.Edges.Clear()
-
-                    if not (incomingEdges.[nextNodeIndex].Remove(node)) then
-                        failwith "failed to remove"
-
-                    match incomingEdges.[nextNodeIndex].Count with
-                    | 0 -> nodes.[nextNodeIndex] <- None // nextNode は不要
-                    | i -> nextNode.HasMultipleIncomingEdges <- i > 1
-                | _ -> ()
-            *)
-
         let rootNode, _ = createCfg (expr, Unit)
         reduceCfg rootNode
 
