@@ -104,8 +104,8 @@ type Builder<'I>() =
             | Some x -> x.IsEscaped <- true
             | None -> ()
 
-        let oneWay = <@ 0, None @>
-        let boxExpr expr = FsExpr.Cast<obj>(FsExpr.Coerce(expr, typeof<obj>))
+        let oneWay = <@ 0, Option<WaitCondition>.None @>
+        let waitCondExpr expr = FsExpr.Cast<WaitCondition>(FsExpr.Coerce(expr, typeof<WaitCondition>))
         let discardObjVar () = FsVar("_", typeof<obj>)
         let mutable tmpVarCount = 0
         let tmpVar (name, ty) =
@@ -129,7 +129,7 @@ type Builder<'I>() =
                 let node = newNode (discardObjVar(), body, false)
                 node
             | WaitCondition ->
-                let node = newNode (discardObjVar(), <@ 0, Some %(boxExpr expr) @>, true)
+                let node = newNode (discardObjVar(), <@ 0, Some %(waitCondExpr expr) @>, true)
                 node
 
         /// node の最後に expr を挿入する
@@ -274,7 +274,7 @@ type Builder<'I>() =
                                     let e =
                                         FsExpr.Sequential(
                                             assignExpr,
-                                            <@ 0, Some %(boxExpr bodyExpr) @>)
+                                            <@ 0, Some %(waitCondExpr bodyExpr) @>)
                                     e, true
                             let rightNode = newNode (funcParam, nodeExpr, returnsWaitCondition)
                             connectMutNode (leftLast, rightNode)
@@ -357,7 +357,7 @@ type Builder<'I>() =
                         let trueTuple = createCfg (trueExpr, Assign waitCondVar)
                         let falseTuple = createCfg (falseExpr, Assign waitCondVar)
                         let joinNode =
-                            let varExpr = boxExpr (FsExpr.Var(waitCondVar))
+                            let varExpr = waitCondExpr (FsExpr.Var(waitCondVar))
                             let body = <@ 0, Some %varExpr @>
                             newNode (discardObjVar(), body, true)
                         joinNode.HasMultipleIncomingEdges <- true
@@ -467,7 +467,7 @@ type Builder<'I>() =
                             | Assign var ->
                                 FsExpr.Sequential(FsExpr.VarSet(var, newBody), oneWay), false
                             | WaitCondition ->
-                                <@@ 0, Some %(boxExpr newBody) @@>, true
+                                <@@ 0, Some %(waitCondExpr newBody) @@>, true
                         | _ -> failwith "assignNodeLast.Expr is not a OneWayBody."
 
                     assignNodeLast.Expr <- nodeExpr |> excast
@@ -511,14 +511,14 @@ type Builder<'I>() =
                 | OneWayBody (None | Some DerivedPatterns.Unit) ->
                     // body がないので、 condVar によって分岐する式に完全に置き換える
                     addVar condVar
-                    lastNode.Expr <- <@ (if %condVarExpr then 1 else 0), None @>
+                    lastNode.Expr <- <@ (if %condVarExpr then 1 else 0), Option<WaitCondition>.None @>
                     lastNode
                 | OneWayBody (Some body) ->
                     let proc, lastExpr = splitLastExpr body
                     match lastExpr with
                     | Patterns.VarSet (setVar, setExpr) when setVar = condVar ->
                         // 最後の式が condVar への代入ならば、代入ごと消す
-                        let returnExpr = <@@ (if %%setExpr then 1 else 0), None @@>
+                        let returnExpr = <@@ (if %%setExpr then 1 else 0), Option<WaitCondition>.None @@>
                         let newBody =
                             match proc with
                             | Some x -> FsExpr.Sequential(x, returnExpr)
@@ -527,12 +527,13 @@ type Builder<'I>() =
                     | _ ->
                         // condVar によって分岐する
                         addVar condVar
-                        let newBody = FsExpr.Sequential(body, <@@ (if %condVarExpr then 1 else 0), None @@>)
+                        let newBody = FsExpr.Sequential(body,
+                            <@@ (if %condVarExpr then 1 else 0), Option<WaitCondition>.None @@>)
                         lastNode.Expr <- newBody |> excast                            
                     lastNode
                 | _ ->
                     addVar condVar
-                    let newBody = <@ (if %condVarExpr then 1 else 0), None @>
+                    let newBody = <@ (if %condVarExpr then 1 else 0), Option<WaitCondition>.None @>
                     let condNode = newNode (discardObjVar(), newBody, false)
                     connectMutNode (lastNode, condNode)
                     condNode

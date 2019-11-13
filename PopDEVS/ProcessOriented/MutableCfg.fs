@@ -25,7 +25,7 @@ type MutableNode =
     { /// 前回のイベントの戻り値を受け取る obj 型変数
       mutable LambdaParameter: FsVar
       /// 処理を行い、次に遷移する辺のインデックスを返す式
-      mutable Expr: FsExpr<int * obj option>
+      mutable Expr: FsExpr<int * WaitCondition option>
       /// 複数の入力辺が存在する可能性があるか
       mutable HasMultipleIncomingEdges: bool
       mutable ReturnsWaitCondition: bool
@@ -36,11 +36,11 @@ type MutableNode =
 // IncomingEdges: HashSet<MutableNode>
 // OutgoingEdges: List<(MutableNode * returnsWaitCondition: bool)>
 
-/// `FSharp.Quotations.Expr` を `FSharp.Quotations.Expr<int * obj option>` に変換する
+/// `FSharp.Quotations.Expr` を `FSharp.Quotations.Expr<int * WaitCondition option>` に変換する
 let excast (source: FsExpr) =
     match source with
-    | :? FsExpr<int * obj option> as x -> x
-    | x -> FsExpr.Cast<int * obj option>(x)
+    | :? FsExpr<int * WaitCondition option> as x -> x
+    | x -> FsExpr.Cast<int * WaitCondition option>(x)
 
 /// Sequential で連結された最後の式と、それ以外に分離する
 let rec splitLastExpr = function
@@ -53,7 +53,7 @@ let rec splitLastExpr = function
 let (|OneWayBody|_|) expr =
     let (|OneWayExpr|_|) = function
         | Patterns.NewTuple [edgeIndexExpr; waitCondOptionExpr]
-            when waitCondOptionExpr = <@@ None @@> ->
+            when waitCondOptionExpr = <@@ Option<WaitCondition>.None @@> ->
             match edgeIndexExpr with
             | Patterns.ValueWithName _ ->
                 // ValueWithName は定数なので DerivedPatterns.Int32 にマッチするが

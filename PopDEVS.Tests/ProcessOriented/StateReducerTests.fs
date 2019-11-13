@@ -7,7 +7,7 @@ open FSharp.Quotations
 open PopDEVS.ProcessOriented
 open MutableCfg
 
-let private lambdaToNode (expr: FsExpr<obj -> int * obj option>) =
+let private lambdaToNode (expr: FsExpr<obj -> int * WaitCondition option>) =
     match expr with
     | Patterns.Lambda (lambdaVar, lambdaBody) ->
         let returnsWaitCondition =
@@ -69,7 +69,7 @@ let private reduceIfTests =
             let condNode = lambdaToNode <@ fun _ -> ignore "cond"; (if true then 1 else 0), None @>
             let leftNode = lambdaToNode <@ fun _ -> ignore "when false"; 0, None @>
             let rightNode = lambdaToNode <@ fun _ -> ignore "when true"; 0, None @>
-            let mergeNode = lambdaToNode <@ fun _ -> ignore "merge"; 0, Some (waitCond :> obj) @>
+            let mergeNode = lambdaToNode <@ fun _ -> ignore "merge"; 0, Some (waitCond :> WaitCondition) @>
             mergeNode.HasMultipleIncomingEdges <- true
             let nextNode = lambdaToNode oneWayLambda
 
@@ -95,7 +95,7 @@ let private reduceIfTests =
                 <@ ignore "cond";
                    if true then ignore "when true" else ignore "when false"
                    ignore "merge"
-                   0, Some (waitCond :> obj) @>
+                   0, Some (waitCond :> WaitCondition) @>
             Expect.equal condNode.Expr expectedExpr "condNode.Expr is transformed"
 
             Expect.isFalse condNode.HasMultipleIncomingEdges "HasMultipleIncomingEdges is not changed"
@@ -152,7 +152,7 @@ let private reduceWhileTests =
             let condNode = lambdaToNode <@ fun _ -> ignore "cond"; (if true then 1 else 0), None @>
             condNode.HasMultipleIncomingEdges <- true
             let loopBodyNode = lambdaToNode <@ fun _ -> ignore "loop"; 0, None @>
-            let exitNode = lambdaToNode <@ fun _ -> ignore "exit"; 0, Some (waitCond :> obj) @>
+            let exitNode = lambdaToNode <@ fun _ -> ignore "exit"; 0, Some (waitCond :> WaitCondition) @>
             let nextNode = lambdaToNode oneWayLambda
 
             connectMutNode(prevNode, condNode)
@@ -179,7 +179,7 @@ let private reduceWhileTests =
                 <@ ignore "cond";
                    while true do ignore "loop"
                    ignore "exit"
-                   0, Some (waitCond :> obj) @>
+                   0, Some (waitCond :> WaitCondition) @>
             Expect.equal condNode.Expr expectedExpr "condNode.Expr is transformed"
 
             Expect.isFalse condNode.HasMultipleIncomingEdges "the edge from loopBodyNode to condNode is removed"
@@ -195,10 +195,10 @@ let private reduceExitNodesTests =
         let condNode = lambdaToNode <@ fun _ -> %condNodeExpr @>
         let removableNodeWaitCondExpr =
             if removableNodeReturnsWaitCondition
-            then <@ Some (waitCond :> obj) @> else <@ None @>
+            then <@ Some (waitCond :> WaitCondition) @> else <@ None @>
         let removableNodeExpr = <@ ignore "removable"; 0, %removableNodeWaitCondExpr @>
         let removableNode = lambdaToNode <@ fun _ -> %removableNodeExpr @>
-        let trueNode = lambdaToNode <@ fun _ -> 0, Some (waitCond :> obj) @>
+        let trueNode = lambdaToNode <@ fun _ -> 0, Some (waitCond :> WaitCondition) @>
         let notRemovableNode = lambdaToNode oneWayLambda
 
         connectMutNode(condNode, removableNode)
@@ -222,7 +222,7 @@ let private reduceExitNodesTests =
 
         match condNode.Expr with
         | Patterns.Let (retTupleVar, letExpr, body) ->
-            let retTupleExpr = FsExpr.Var(retTupleVar) |> FsExpr.Cast<int * obj option>
+            let retTupleExpr = FsExpr.Var(retTupleVar) |> FsExpr.Cast<int * WaitCondition option>
             Expect.equal letExpr condNodeExpr.Raw "let retTuple = (if true then 1 else 0), None"
 
             match body with
@@ -244,7 +244,7 @@ let private reduceExitNodesTests =
                     Expect.equal gtCond <@@ %edgeIndexExpr > 0 @@> "elif edgeIndex > 0"
 
                     Expect.equal exprIfGt
-                        <@@ %edgeIndexExpr - 1, %(FsExpr.TupleGet(retTupleExpr, 1) |> FsExpr.Cast<obj option>) @@>
+                        <@@ %edgeIndexExpr - 1, %(FsExpr.TupleGet(retTupleExpr, 1) |> FsExpr.Cast<WaitCondition option>) @@>
                         "then edgeIndex -1, snd retTuple"
 
                     Expect.equal exprIfLt retTupleExpr.Raw "else retTuple"
@@ -258,14 +258,14 @@ let private reduceExitNodesTests =
         testCase "remove condition edge returning WaitCondition" <| removeConditionEdgeTest true
 
         test "don't remove node if the node has 2 incoming edges" {
-            let condLambda = <@ fun _ -> (if true then 1 else 0), None @>
+            let condLambda = <@ fun _ -> (if true then 1 else 0), Option<WaitCondition>.None @>
             let condNode1 = lambdaToNode condLambda
             let notRemovableNode1 = lambdaToNode oneWayLambda
             notRemovableNode1.HasMultipleIncomingEdges <- true
             let condNode2 = lambdaToNode condLambda
             let waitNode =
                 let waitCond = Unchecked.defaultof<WaitCondition<int, unit>>
-                lambdaToNode <@ fun _ -> 0, Some (waitCond :> obj) @>
+                lambdaToNode <@ fun _ -> 0, Some (waitCond :> WaitCondition) @>
             let notRemovableNode2 = lambdaToNode oneWayLambda
 
             connectMutNode(condNode1, notRemovableNode1)

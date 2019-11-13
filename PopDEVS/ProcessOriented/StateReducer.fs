@@ -26,7 +26,7 @@ let private replaceEdges env (oldNode, newNode) =
         if not (dstIncomingEdges.Add(newNode)) then
             failwith "Duplicate edge"
 
-let private toUnitExpr (expr: FsExpr<int * obj option>) =
+let private toUnitExpr (expr: FsExpr<int * WaitCondition option>) =
     match expr with
     | OneWayBody (Some body) ->
         let newBody =
@@ -58,7 +58,7 @@ let reduceIf (env: ReduceEnv) (cond, left, right, merge) =
         let condBody, condLast = splitLastExpr cond.Expr
         match condLast with
         | Patterns.NewTuple [Patterns.IfThenElse (condExpr, DerivedPatterns.Int32 1, DerivedPatterns.Int32 0); waitCondOptionExpr]
-          when waitCondOptionExpr = <@@ None @@> ->
+          when waitCondOptionExpr = <@@ Option<WaitCondition>.None @@> ->
             let expr =
                 FsExpr.Sequential(
                     FsExpr.IfThenElse(condExpr,
@@ -81,7 +81,7 @@ let reduceWhile (env: ReduceEnv) (cond, loopBody, exit) =
         let condBody, condLast = splitLastExpr cond.Expr
         match condLast with
         | Patterns.NewTuple [Patterns.IfThenElse (condExpr, DerivedPatterns.Int32 1, DerivedPatterns.Int32 0); waitCondOptionExpr]
-          when waitCondOptionExpr = <@@ None @@> ->
+          when waitCondOptionExpr = <@@ Option<WaitCondition>.None @@> ->
             let expr =
                 FsExpr.Sequential(
                     FsExpr.WhileLoop(condExpr, toUnitExpr loopBody.Expr),
@@ -175,11 +175,11 @@ let reduceExitNodes rootNode =
         | _ -> failwith "node does not returns 0 as the index of edge."
 
     let removeExitNode (node, index) =
-        let retTupleVar = FsVar("retTuple", typeof<int * obj option>, false)
-        let retTupleExpr = FsExpr.Var(retTupleVar) |> FsExpr.Cast<int * obj option>
+        let retTupleVar = FsVar("retTuple", typeof<int * WaitCondition option>, false)
+        let retTupleExpr = FsExpr.Var(retTupleVar) |> FsExpr.Cast<int * WaitCondition option>
         let edgeIndexVar = FsVar("edgeIndex", typeof<int>, false)
         let edgeIndexExpr = FsExpr.Var(edgeIndexVar) |> FsExpr.Cast<int>
-        let retTupleSnd = FsExpr.TupleGet(retTupleExpr, 1) |> FsExpr.Cast<obj option>
+        let retTupleSnd = FsExpr.TupleGet(retTupleExpr, 1) |> FsExpr.Cast<WaitCondition option>
         let indexExpr = FsExpr.Value(index) |> FsExpr.Cast<int>
         let otherEdgeExpr =
             if index < node.Edges.Count - 1 then
@@ -240,10 +240,10 @@ let combineOneWayNodes rootNode =
                 (not node.Edges.[0].HasMultipleIncomingEdges)
             then
                 let nextNode = node.Edges.[0]
-                let retTupleVar = FsVar("retTuple", typeof<int * obj option>, false)
-                let retTupleExpr = FsExpr.Var(retTupleVar) |> FsExpr.Cast<int * obj option>
+                let retTupleVar = FsVar("retTuple", typeof<int * WaitCondition option>, false)
+                let retTupleExpr = FsExpr.Var(retTupleVar) |> FsExpr.Cast<int * WaitCondition option>
                 let retTupleFst = FsExpr.TupleGet(retTupleExpr, 0) |> FsExpr.Cast<int>
-                let retTupleSnd = FsExpr.TupleGet(retTupleExpr, 1) |> FsExpr.Cast<obj option>
+                let retTupleSnd = FsExpr.TupleGet(retTupleExpr, 1) |> FsExpr.Cast<WaitCondition option>
                 node.Expr <-
                     // let retTuple = (original expr)
                     // if fst retTuple = 0 then

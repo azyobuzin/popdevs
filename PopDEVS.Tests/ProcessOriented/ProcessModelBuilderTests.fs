@@ -7,7 +7,7 @@ open FSharp.Quotations
 open PopDEVS.ProcessOriented
 open MutableCfg
 
-let private createImmutableNode (index, hasMultipleIncomingEdges, edges) (expr: FsExpr<obj -> int * obj option>) : ImmutableNode =
+let private createImmutableNode (index, hasMultipleIncomingEdges, edges) (expr: FsExpr<obj -> int * WaitCondition option>) : ImmutableNode =
     match expr with
     | Patterns.Lambda (lambdaVar, lambdaBody) ->
         { Index = index
@@ -83,32 +83,32 @@ let tests =
             let expectedNodes =
                 [
                     createImmutableNode (0, false, [1])
-                        <@ fun _ -> %%(FsExpr.VarSet(iVar, <@@ 1 @@>)); 0, None @>
+                        <@ fun _ -> %%(FsExpr.VarSet(iVar, <@@ 1 @@>)); 0, Option<WaitCondition>.None @>
 
                     createImmutableNode (1, true, [2; 3])
-                        <@ fun _ -> (if %iExpr <= 9 then 1 else 0), None @>
+                        <@ fun _ -> (if %iExpr <= 9 then 1 else 0), Option<WaitCondition>.None @>
 
                     createImmutableNode (2, false, [])
-                        <@ fun _ -> 0, None @>
+                        <@ fun _ -> 0, Option<WaitCondition>.None @>
 
                     createImmutableNode (3, false, [4])
-                        <@ fun _ -> 0, Some (%returnInputWaitConditionExpr :> obj) @>
+                        <@ fun _ -> 0, Some (%returnInputWaitConditionExpr :> WaitCondition) @>
 
                     createImmutableNode (4, false, [5; 6])
                         (let waitResultVar = FsVar("waitResult", typeof<obj>)
-                         FsExpr.Cast<obj -> int * obj option>(
+                         FsExpr.Cast<obj -> int * WaitCondition option>(
                             FsExpr.Lambda(waitResultVar,
                                 FsExpr.Sequential(
                                     FsExpr.VarSet(vVar, FsExpr.Coerce(FsExpr.Var(waitResultVar), typeof<int>)),
-                                    <@@ (if %vExpr % 2 = 0 then 1 else 0), None @@>))))
+                                    <@@ (if %vExpr % 2 = 0 then 1 else 0), Option<WaitCondition>.None @@>))))
 
                     createImmutableNode (5, true, [1])
                         <@ fun _ ->
                             %%(FsExpr.VarSet(iVar, <@@ %iExpr + 1 @@>))
-                            0, None @>
+                            0, Option<WaitCondition>.None @>
 
                     createImmutableNode (6, false, [5])
-                        <@ fun _ -> 0, Some (%unitWaitConditionExpr :> obj) @>
+                        <@ fun _ -> 0, Some (%unitWaitConditionExpr :> WaitCondition) @>
                 ]
 
             Expect.hasLength actualNodes expectedNodes.Length "graph has 7 nodes"

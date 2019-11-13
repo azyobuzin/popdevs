@@ -36,7 +36,7 @@ type Node =
       /// 前回のイベントの戻り値を受け取る obj 型変数
       LambdaParameter: FsVar
       /// 処理を行い、次に遷移する辺のインデックスとイベントを返す式
-      Expr: FsExpr<int * obj option>
+      Expr: FsExpr<int * WaitCondition option>
       /// 複数の入力辺が存在するか
       HasMultipleIncomingEdges: bool
       /// このノードを始点とする辺の終点ノードのインデックス
