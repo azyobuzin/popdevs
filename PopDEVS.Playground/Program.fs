@@ -1,3 +1,4 @@
+open PopDEVS
 open PopDEVS.ProcessOriented
 
 [<EntryPoint>]
@@ -7,7 +8,7 @@ let main argv =
         processModel<int> {
             let mutable i = 1
             while i <= 9 do
-                let! v = ProcessEnv.receiveEvent (fun x -> Some x.Event) env
+                let! v = ProcessEnv.receiveEvent anyEvent env
                 if v % 2 = 0 then
                     do! ProcessEnv.wait 10.0 env
                 i <- i + 1

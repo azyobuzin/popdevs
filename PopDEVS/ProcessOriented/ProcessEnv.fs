@@ -15,17 +15,9 @@ type ProcessEnv<'I, 'O> internal (innerEnv: ISimEnv) =
 
     [<CompiledName("Wait")>]
     static member wait time (env: ProcessEnv<'I, 'O>) =
-        let targetTime = (ProcessEnv.getTime env) + time
-        let poll (_, env, _, _) =
-            SimEnv.getTime env >= targetTime |> boolToOption
-        WaitCondition<'I, _>(poll)
+        let endTime = (ProcessEnv.getTime env) + time
+        WaitCondition<'I, unit>(TimeoutCondition(endTime))
 
     [<CompiledName("ReceiveEvent")>]
-    static member receiveEvent chooser (env: ProcessEnv<'I, 'O>) =
-        let poll (_, _, _, inputBuf) =
-            let events = inputBuf |> InputEventBuffer.takeWithLimit chooser 1
-            match events.Length with
-            | 0 -> None
-            | 1 -> Some events.[0]
-            | _ -> failwith "takeWithLimit returns more than 1 events."
-        WaitCondition<'I, _>(poll)
+    static member receiveEvent (chooser: InputEventChooser<'I, 'R>) (_env: ProcessEnv<'I, 'O>) =
+        WaitCondition<'I, 'R>(ReceiveEventCondition(chooser))

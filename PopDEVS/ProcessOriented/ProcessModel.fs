@@ -2,7 +2,7 @@ namespace PopDEVS.ProcessOriented
 
 open System.Collections.Immutable
 open PopDEVS
-
+    
 [<AutoOpen>]
 module ProcessModelBuilder =
     let processModel<'I> = ProcessModelBuilderImpl.Builder<'I>()
@@ -10,35 +10,56 @@ module ProcessModelBuilder =
 module ProcessModel =
     type private ProcessModelState<'O> =
         { StateIndex: int
-          Variables: ImmutableArray<obj>
+          Variables: obj[]
+          WaitCondition: WaitConditionInner option
           TimeAdvance: float
           Outputs: 'O list }
 
     let private createAtomicModelFromCompiledStates (states: ImmutableArray<CompiledState>, varlen) =
-        let transition (state, _env, _elapsed, _inputBuf) =
-            // TODO: env, inputBuf を ProcessEnv に反映する
+        let transition (state, env, _elapsed, inputBuf) =
+            // TODO: env を ProcessEnv に反映する
 
             if List.isEmpty state.Outputs then
                 if state.StateIndex >= 0 then
-                    // TODO: 待機中の WaitCondition があるならばチェックする
-                    let waitResult = Unchecked.defaultof<obj>
+                    let waitResultOption =
+                        match state.WaitCondition with
+                        | Some cond ->
+                            cond.Poll(env, box inputBuf)
+                            cond.Result
+                        | None ->
+                            // 待機を行っていない場合は、 null を戻り値ということにしておく
+                            Some Unchecked.defaultof<obj>
 
-                    // 状態遷移を行う
-                    let compiledState = states.[state.StateIndex]
-                    let vars = Array.ofSeq state.Variables
-                    let edge, waitCondition = compiledState.Transition (waitResult, vars)
+                    let nextState, waitCondition, outputs =
+                        match waitResultOption with
+                        | Some waitResult ->
+                            // 状態遷移を行う
+                            let compiledState = states.[state.StateIndex]
+                            let edge, waitCondition = compiledState.Transition (waitResult, state.Variables)
 
-                    let nextState =
-                        if edge >= 0 && edge < compiledState.Edges.Length then
-                            compiledState.Edges.[edge]
-                        else
-                            -1 // 範囲外の遷移は、シミュレーション終了を表す
-                    
-                    { StateIndex = nextState
-                      Variables = ImmutableArray.CreateRange(vars)
-                      TimeAdvance = 0.0 // TODO: waitCondition から TimeAdvance を引っ張り出す
-                      Outputs = [] // TODO: ProcessEnv から出力を収集する
-                    }
+                            let nextState =
+                                if edge >= 0 && edge < compiledState.Edges.Length then
+                                    compiledState.Edges.[edge]
+                                else
+                                    -1 // 範囲外の遷移は、シミュレーション終了を表す
+                            let waitCondition = waitCondition |> Option.map (fun x -> x.Inner)
+                            let outputs = [] // TODO: ProcessEnv から出力を収集する
+
+                            nextState, waitCondition, outputs
+                        | None ->
+                            // 条件を満たしていないので、まだ待機
+                            state.StateIndex, state.WaitCondition, []
+
+                    let timeAdvance =
+                        match waitCondition with
+                        | Some x -> x.TimeAdvance(SimEnv.getTime env)
+                        | None -> 0.0
+
+                    { state with
+                        StateIndex = nextState
+                        WaitCondition = waitCondition
+                        TimeAdvance = timeAdvance
+                        Outputs = outputs }
                 else
                     // 終了状態
                     state
@@ -56,10 +77,9 @@ module ProcessModel =
         let output state = state.Outputs :> seq<_>
 
         let initialState =
-            let vars = ImmutableArray.CreateBuilder(varlen)
-            vars.Count <- varlen // デフォルト値を詰める
             { StateIndex = 0
-              Variables = vars.MoveToImmutable()
+              Variables = Array.zeroCreate varlen
+              WaitCondition = None
               TimeAdvance = 0.0
               Outputs = [] }
 
