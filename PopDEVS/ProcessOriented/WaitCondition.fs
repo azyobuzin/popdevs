@@ -34,7 +34,7 @@ type internal ReceiveEventCondition<'a, 'b>(chooser: InputEventChooser<'a, 'b>) 
         | Some _ -> 0.0
         | None -> infinity
 
-type internal OrWaitCondition(left: WaitConditionInner, right: WaitConditionInner) =
+type internal OrWaitCondition<'a, 'b>(left: WaitConditionInner, right: WaitConditionInner) =
     inherit WaitConditionInner()
 
     override this.Poll(args) =
@@ -46,14 +46,17 @@ type internal OrWaitCondition(left: WaitConditionInner, right: WaitConditionInne
 
         match left.Result, right.Result with
         | None, None -> ()
-        | x -> this.Result <- box x |> Some
+        | l, r ->
+            this.Result <-
+                (Option.map unbox<'a> l, Option.map unbox<'b> r)
+                |> box |> Some
 
     override this.TimeAdvance(now) =
         match this.Result with
         | Some _ -> 0.0
         | None -> min (left.TimeAdvance(now)) (right.TimeAdvance(now))
 
-type internal AndWaitCondition(left: WaitConditionInner, right: WaitConditionInner) =
+type internal AndWaitCondition<'a, 'b>(left: WaitConditionInner, right: WaitConditionInner) =
     inherit WaitConditionInner()
 
     override this.Poll(args) =
@@ -64,7 +67,10 @@ type internal AndWaitCondition(left: WaitConditionInner, right: WaitConditionInn
             right.Poll(args)
 
         match left.Result, right.Result with
-        | Some x, Some y -> this.Result <- box (x, y) |> Some
+        | Some x, Some y ->
+            this.Result <-
+                (x :?> 'a, y :?> 'b)
+                |> box |> Some
         | _ -> ()
 
     override _.TimeAdvance(now) =
@@ -74,16 +80,17 @@ type internal AndWaitCondition(left: WaitConditionInner, right: WaitConditionInn
         | Some _, None -> right.TimeAdvance(now)
         | None, None -> max (left.TimeAdvance(now)) (right.TimeAdvance(now))
 
+[<AbstractClass>]
 type WaitCondition internal (inner: WaitConditionInner) =
     member internal __.Inner = inner
 
-type WaitCondition<'Input, 'Result> internal (inner) =
+type WaitCondition<'Input, 'Result> internal (inner: WaitConditionInner) =
     inherit WaitCondition(inner)
 
     /// <summary>左辺または右辺の少なくともどちらかの条件を満たしたときに待機を終了する <see cref="WaitCondition{I,O}"/> を作成します。</summary>
-    static member (|||) (x: WaitCondition<'Input, 'Result>, y: WaitCondition<'Input, _>) =
-        WaitCondition(OrWaitCondition(x.Inner, y.Inner))
+    static member (|||) (x: WaitCondition<'Input, 'Result>, y: WaitCondition<'Input, 'a>) =
+        WaitCondition<'Input, 'Result option * 'a option>(OrWaitCondition<'Result, 'a>(x.Inner, y.Inner))
 
     /// <summary>左辺と右辺が条件を満たしたときに待機を終了する <see cref="WaitCondition{I,O}"/> を作成します。</summary>
-    static member (&&&) (x: WaitCondition<'Input, 'Result>, y: WaitCondition<'Input, _>) =
-        WaitCondition(AndWaitCondition(x.Inner, y.Inner))
+    static member (&&&) (x: WaitCondition<'Input, 'Result>, y: WaitCondition<'Input, 'a>) =
+        WaitCondition<'Input, 'Result * 'a>(AndWaitCondition<'Result, 'a>(x.Inner, y.Inner))
