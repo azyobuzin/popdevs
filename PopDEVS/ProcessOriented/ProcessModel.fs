@@ -1,6 +1,11 @@
 namespace PopDEVS.ProcessOriented
 
+open System.Collections.Generic
 open System.Collections.Immutable
+open FSharp.Quotations
+open FSharp.Quotations.Evaluator
+open FSharp.Quotations.ExprShape
+open MutableCfg
 open PopDEVS
     
 [<AutoOpen>]
@@ -10,12 +15,11 @@ module ProcessModelBuilder =
 module ProcessModel =
     type private ProcessModelState<'O> =
         { StateIndex: int
-          Variables: obj[]
           WaitCondition: WaitConditionInner option
           TimeAdvance: float
           Outputs: 'O list }
 
-    let private createAtomicModelFromCompiledStates (states: ImmutableArray<CompiledState>, varlen) =
+    let private createAtomicModelFromCompiledStates (states: ImmutableArray<CompiledState>) =
         let transition (state, env, _elapsed, inputBuf) =
             // TODO: env を ProcessEnv に反映する
 
@@ -35,7 +39,7 @@ module ProcessModel =
                         | Some waitResult ->
                             // 状態遷移を行う
                             let compiledState = states.[state.StateIndex]
-                            let edge, waitCondition = compiledState.Transition (waitResult, state.Variables)
+                            let edge, waitCondition = compiledState.Transition waitResult
 
                             let nextState =
                                 if edge >= 0 && edge < compiledState.Edges.Length then
@@ -78,12 +82,46 @@ module ProcessModel =
 
         let initialState =
             { StateIndex = 0
-              Variables = Array.zeroCreate varlen
               WaitCondition = None
               TimeAdvance = 0.0
               Outputs = [] }
 
         AtomicModel.create (transition, timeAdvance, output) initialState
+
+    /// `node.Expr` をコンパイルし、 `variables -> waitResult -> (int * WaitCondition option)` の関数を返す
+    let private compileNode (varConvTable: IReadOnlyDictionary<_, _>) (node: ImmutableNode) =
+        let expr =
+            /// 変数から、実際に格納する配列の添え字を求める
+            let indexExpr var =
+                varConvTable.TryFind(var)
+                |> Option.map (FsExpr.Value<int> >> FsExpr.Cast<int>)
+
+            let varsParam = FsVar("variables", typeof<obj[]>, false)
+            let varsExpr = FsExpr.Cast<obj[]>(FsExpr.Var(varsParam))
+
+            /// 変数の読み書きを、配列の読み書きに書き換える
+            let rec convVar = function
+                | Patterns.VarSet (v, e) as x ->
+                    match indexExpr v with
+                    | Some idxExpr -> <@@ (%varsExpr).[%idxExpr] <- %%(convVar e) @@>
+                    | None -> x
+                | ShapeVar v ->
+                    match indexExpr v with
+                    | Some idxExpr -> <@@ (%varsExpr).[%idxExpr] @@>
+                    | None -> FsExpr.Var(v)
+                | ShapeLambda (v, e) ->
+                    FsExpr.Lambda(v, convVar e)
+                | ShapeCombination (shape, es) ->
+                    RebuildShapeCombination(shape, List.map convVar es)
+
+            FsExpr.Lambda(
+                varsParam,
+                FsExpr.Lambda(
+                    node.LambdaParameter,
+                    convVar node.Expr))
+            |> FsExpr.Cast<obj[] -> obj option -> int * WaitCondition option>
+
+        expr.Evaluate()
 
     let createAtomicModel<'I, 'O> (processModel: ProcessEnv<'I, 'O> -> ProcessModelBuilderResult<'I>) =
         raise (System.NotImplementedException()) :> AtomicModel<'I, 'O>
