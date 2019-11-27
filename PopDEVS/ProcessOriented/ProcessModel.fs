@@ -19,10 +19,10 @@ module ProcessModel =
           TimeAdvance: float
           Outputs: 'O list }
 
-    let private createAtomicModelFromCompiledStates (states: ImmutableArray<CompiledState>) =
+    let private createAtomicModelFromCompiledStates<'I, 'O> (processEnv: ProcessEnv<'I, 'O> option)
+                                                            (states: ImmutableArray<CompiledState>)
+                                                            : AtomicModel<'I, 'O> =
         let transition (state, env, _elapsed, inputBuf) =
-            // TODO: env を ProcessEnv に反映する
-
             if List.isEmpty state.Outputs then
                 if state.StateIndex >= 0 then
                     let waitResultOption =
@@ -37,6 +37,11 @@ module ProcessModel =
                     let nextState, waitCondition, outputs =
                         match waitResultOption with
                         | Some waitResult ->
+                            // ProcessEnv を用意する
+                            match processEnv with
+                            | Some pe -> pe.SetSimEnv(env)
+                            | None -> ()
+
                             // 状態遷移を行う
                             let compiledState = states.[state.StateIndex]
                             let edge, waitCondition = compiledState.Transition waitResult
@@ -47,7 +52,12 @@ module ProcessModel =
                                 else
                                     -1 // 範囲外の遷移は、シミュレーション終了を表す
                             let waitCondition = waitCondition |> Option.map (fun x -> x.Inner)
-                            let outputs = [] // TODO: ProcessEnv から出力を収集する
+
+                            // ProcessEnv から出力を取得する
+                            let outputs =
+                                match processEnv with
+                                | Some pe -> pe.Reset()
+                                | None -> []
 
                             nextState, waitCondition, outputs
                         | None ->
@@ -57,7 +67,7 @@ module ProcessModel =
                     let timeAdvance =
                         match waitCondition with
                         | Some x -> x.TimeAdvance(SimEnv.getTime env)
-                        | None -> 0.0
+                        | None -> if nextState >= 0 then 0.0 else infinity
 
                     { state with
                         StateIndex = nextState
@@ -124,4 +134,5 @@ module ProcessModel =
         expr.Evaluate()
 
     let createAtomicModel<'I, 'O> (processModel: ProcessEnv<'I, 'O> -> ProcessModelBuilderResult<'I>) =
+        // TODO: ProcessEnv<'I, 'O> の変数を 0 または 1 個含んでいるはず。それの添え字をうまくやる
         raise (System.NotImplementedException()) :> AtomicModel<'I, 'O>

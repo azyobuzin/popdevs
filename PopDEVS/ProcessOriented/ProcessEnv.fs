@@ -1,17 +1,33 @@
 namespace PopDEVS.ProcessOriented
 
+open System.Collections.Generic
 open PopDEVS
 
-type ProcessEnv<'I, 'O> internal (innerEnv: ISimEnv) =
-    member private __.InnerEnv = innerEnv // SimEnv は transition で渡ってくるから、ここだと都合悪い
+type ProcessEnv<'I, 'O> internal () =
+    let mutable innerEnv : ISimEnv option = None
+    let outputBuffer = List<'O>()
+
+    member internal __.GetSimEnv() =
+        match innerEnv with
+        | Some x -> x
+        | None -> invalidOp "ProcessEnv cannot be used out of simulation."
+
+    member internal __.SetSimEnv(env) =
+        innerEnv <- Some env
+
+    member internal __.Reset() =
+        innerEnv <- None
+        let outputs = List.ofSeq outputBuffer
+        outputBuffer.Clear()
+        outputs
 
     [<CompiledName("GetTime")>]
     static member getTime (env: ProcessEnv<'I, 'O>) =
-        env.InnerEnv.GetTime()
+        env.GetSimEnv().GetTime()
 
     [<CompiledName("RunIO")>]
     static member runIO action (env: ProcessEnv<'I, 'O>) =
-        env.InnerEnv.RunIO(action)
+        env.GetSimEnv().RunIO(action)
 
     [<CompiledName("Wait")>]
     static member wait time (env: ProcessEnv<'I, 'O>) =
@@ -21,3 +37,5 @@ type ProcessEnv<'I, 'O> internal (innerEnv: ISimEnv) =
     [<CompiledName("ReceiveEvent")>]
     static member receiveEvent (chooser: InputEventChooser<'I, 'R>) (_env: ProcessEnv<'I, 'O>) =
         WaitCondition<'I, 'R>(ReceiveEventCondition(chooser))
+
+    // TODO: 出力を登録
