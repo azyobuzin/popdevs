@@ -21,21 +21,28 @@ type ProcessEnv<'I, 'O> internal () =
         outputBuffer.Clear()
         outputs
 
+    member internal this.AddOutput(ev) =
+        this.GetSimEnv() |> ignore // Check state
+        outputBuffer.Add(ev)
+
+module ProcessEnv =
     [<CompiledName("GetTime")>]
-    static member getTime (env: ProcessEnv<'I, 'O>) =
+    let getTime (env: ProcessEnv<'I, 'O>) =
         env.GetSimEnv().GetTime()
 
     [<CompiledName("RunIO")>]
-    static member runIO action (env: ProcessEnv<'I, 'O>) =
+    let runIO action (env: ProcessEnv<'I, 'O>) =
         env.GetSimEnv().RunIO(action)
 
     [<CompiledName("Wait")>]
-    static member wait time (env: ProcessEnv<'I, 'O>) =
-        let endTime = (ProcessEnv.getTime env) + time
+    let wait time (env: ProcessEnv<'I, 'O>) =
+        let endTime = (getTime env) + time
         WaitCondition<'I, unit>(TimeoutCondition(endTime))
 
     [<CompiledName("ReceiveEvent")>]
-    static member receiveEvent (chooser: InputEventChooser<'I, 'R>) (_env: ProcessEnv<'I, 'O>) =
+    let receiveEvent (chooser: InputEventChooser<'I, 'R>) (_env: ProcessEnv<'I, 'O>) =
         WaitCondition<'I, 'R>(ReceiveEventCondition(chooser))
 
-    // TODO: 出力を登録
+    [<CompiledName("EmitOutput")>]
+    let emitOutput ev (env: ProcessEnv<'I, 'O>) =
+        env.AddOutput(ev)
