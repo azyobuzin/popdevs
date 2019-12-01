@@ -99,7 +99,7 @@ let tests =
                          FsExpr.Cast<obj -> int * WaitCondition option>(
                             FsExpr.Lambda(waitResultVar,
                                 FsExpr.Sequential(
-                                    FsExpr.VarSet(vVar, FsExpr.Coerce(FsExpr.Var(waitResultVar), typeof<int>)),
+                                    FsExpr.VarSet(vVar, FsExpr.Var(waitResultVar) |> unboxExpr typeof<int>),
                                     <@@ (if %vExpr % 2 = 0 then 1 else 0), Option<WaitCondition>.None @@>))))
 
                     createImmutableNode (5, true, [1])

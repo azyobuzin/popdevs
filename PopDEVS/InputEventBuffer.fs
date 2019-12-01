@@ -15,6 +15,7 @@ type InputEventChooser<'a, 'b> = ReceivedEvent<'a> -> 'b option
 
 type internal IInputEventBuffer =
     abstract Take : chooser: (InputEventChooser<obj, 'a>) * limit: int option -> ImmutableArray<'a>
+    // TODO: Peek
 
 type InputEventBuffer<'a> internal (impl: IInputEventBuffer) =
     static let unboxEvent (re: ReceivedEvent<obj>) =

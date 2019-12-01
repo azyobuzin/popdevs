@@ -228,7 +228,7 @@ type Builder<'I>() =
                         addVar resultVar
 
                         let funcParam = tmpVar ("waitResult", typeof<obj>)
-                        let assignExpr = FsExpr.VarSet(resultVar, FsExpr.Coerce(FsExpr.Var(funcParam), waitResultType))
+                        let assignExpr = FsExpr.VarSet(resultVar, FsExpr.Var(funcParam) |> unboxExpr waitResultType)
 
                         match createCfgOrExpr (body, kind) with
                         | Node (rightFirst, rightLast) ->

@@ -42,6 +42,15 @@ let excast (source: FsExpr) =
     | :? FsExpr<int * WaitCondition option> as x -> x
     | x -> FsExpr.Cast<int * WaitCondition option>(x)
 
+let private unboxMethod =
+    match <@@ unbox null @@> with
+    | Patterns.Call (_, methodInfo, _) ->
+        methodInfo.GetGenericMethodDefinition()
+    | _ -> failwith "unreachable"
+/// `obj` を指定した型 `ty` に変換する
+let unboxExpr ty expr =
+    FsExpr.Call(unboxMethod.MakeGenericMethod([| ty |]), [expr])
+
 /// Sequential で連結された最後の式と、それ以外に分離する
 let rec splitLastExpr = function
     | Patterns.Sequential (left, right) ->
