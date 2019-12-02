@@ -10,7 +10,9 @@ open PopDEVS
 [<AutoOpen>]
 module ProcessModelBuilder =
     let processModel<'I> = ProcessModelBuilderImpl.Builder<'I>()
-    
+
+type ProcessModel<'I, 'O> = ProcessEnv<'I, 'O> -> ProcessModelBuilderResult<'I>
+
 module ProcessModel =
     type private ProcessModelState<'O> =
         { StateIndex: int
@@ -21,14 +23,15 @@ module ProcessModel =
     let private createAtomicModelFromCompiledStates<'I, 'O> (processEnv: ProcessEnv<'I, 'O>)
                                                             (states: ImmutableArray<CompiledState>)
                                                             : AtomicModel<'I, 'O> =
-        let transition (state, env, elapsed, inputBuf) =
+        let transition (state, env, elapsed, inputBuf: InputEventBuffer<'I>) =
             let canTransition =
-                elapsed.Completed || List.isEmpty state.Outputs
+                elapsed.Completed || // すべての出力を送信した
+                List.isEmpty state.Outputs // 出力待ちはない
 
             if canTransition then
-                if state.StateIndex >= 0 then
+                let rec transitionLoop (stateIndex, waitCondition: WaitConditionInner option, outputs) =
                     let waitResultOption =
-                        match state.WaitCondition with
+                        match waitCondition with
                         | Some cond ->
                             cond.Poll(env, box inputBuf)
                             cond.Result
@@ -36,44 +39,49 @@ module ProcessModel =
                             // 待機を行っていない場合は、 null を戻り値ということにしておく
                             Some Unchecked.defaultof<obj>
 
-                    let nextState, waitCondition, outputs =
-                        match waitResultOption with
-                        | Some waitResult ->
-                            // ProcessEnv を用意する
-                            processEnv.SetSimEnv(env)
+                    match waitResultOption with
+                    | Some waitResult when stateIndex >= 0 ->
+                        // ProcessEnv を用意する
+                        processEnv.SetSimEnv(env)
 
-                            // 状態遷移を行う
-                            let compiledState = states.[state.StateIndex]
-                            let edge, waitCondition = compiledState.Transition waitResult
+                        // 状態遷移を行う
+                        let compiledState = states.[stateIndex]
+                        let edge, newWaitCondition = compiledState.Transition waitResult
 
-                            let nextState =
-                                if edge >= 0 && edge < compiledState.Edges.Length then
-                                    compiledState.Edges.[edge]
-                                else
-                                    -1 // 範囲外の遷移は、シミュレーション終了を表す
-                            let waitCondition = waitCondition |> Option.map (fun x -> x.Inner)
+                        let nextState =
+                            if edge >= 0 && edge < compiledState.Edges.Length then
+                                compiledState.Edges.[edge]
+                            else
+                                -1 // 範囲外の遷移は、シミュレーション終了を表す
+                        let newWaitCondition = newWaitCondition |> Option.map (fun x -> x.Inner)
 
-                            // ProcessEnv から出力を取得する
-                            let outputs = processEnv.Reset()
+                        // ProcessEnv から出力を取得する
+                        let newOutputs = processEnv.Reset()
 
-                            nextState, waitCondition, outputs
-                        | None ->
-                            // 条件を満たしていないので、まだ待機
-                            state.StateIndex, state.WaitCondition, []
+                        // さらに遷移できるかを試す
+                        transitionLoop (nextState, newWaitCondition, outputs @ newOutputs)
 
-                    let timeAdvance =
-                        match waitCondition with
-                        | Some x -> x.TimeAdvance(SimEnv.getTime env)
-                        | None -> if nextState >= 0 then 0.0 else infinity
+                    | Some _ ->
+                        // 終了状態
+                        stateIndex, None, outputs
 
-                    { state with
-                        StateIndex = nextState
-                        WaitCondition = waitCondition
-                        TimeAdvance = timeAdvance
-                        Outputs = outputs }
-                else
-                    // 終了状態
-                    { state with TimeAdvance = infinity }
+                    | None ->
+                        // 条件を満たしていないので、待機する必要がある
+                        stateIndex, waitCondition, outputs
+
+                let nextState, waitCondition, outputs =
+                    transitionLoop (state.StateIndex, state.WaitCondition, [])
+
+                let timeAdvance =
+                    match waitCondition with
+                    | Some x -> x.TimeAdvance(SimEnv.getTime env)
+                    | None -> if nextState >= 0 then 0.0 else infinity
+
+                { state with
+                    StateIndex = nextState
+                    WaitCondition = waitCondition
+                    TimeAdvance = timeAdvance
+                    Outputs = outputs }
             else
                 // 出力すべきメッセージがあるので、何もしない
                 state
@@ -85,7 +93,7 @@ module ProcessModel =
                 // ただちにメッセージを出力したい
                 0.0
 
-        let output state = state.Outputs :> seq<_>
+        let output state = state.Outputs :> seq<'O>
 
         let initialState =
             { StateIndex = 0
@@ -135,7 +143,7 @@ module ProcessModel =
 
         expr.Evaluate()
 
-    let createAtomicModel<'I, 'O> (processModel: ProcessEnv<'I, 'O> -> ProcessModelBuilderResult<'I>) =
+    let createAtomicModel<'I, 'O> (processModel: ProcessModel<'I, 'O>) =
         let processEnv = ProcessEnv<'I, 'O>()
 
         let cfg =

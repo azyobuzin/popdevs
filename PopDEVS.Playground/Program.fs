@@ -1,3 +1,4 @@
+open System.Collections.Immutable
 open PopDEVS
 open PopDEVS.ProcessOriented
 open PopDEVS.Sequential
@@ -16,7 +17,7 @@ type PrinterManagerOutput =
 type PrinterUserInput =
     | PrinterReady
 
-let printerManager maxPrinters processEnv =
+let printerManagerProcess maxPrinters processEnv =
     processModel {
         let mutable units = maxPrinters
         while true do
@@ -33,6 +34,38 @@ let printerManager maxPrinters processEnv =
                 units <- units + 1
             emitOutput (Report units) processEnv
     }
+
+let printerManagerAtomic maxPrinters =
+    let transition ((units, responses: ImmutableArray<_>), _, elapsed, inputBuf) =
+        // 解放を処理する
+        let releaseMessages =
+            inputBuf
+            |> InputEventBuffer.take (fun x -> match x.Event with Release -> Some () | _ -> None)
+        let units = units + releaseMessages.Length
+
+        // リクエストを処理する
+        let requestMessages =
+            inputBuf
+            |> InputEventBuffer.takeWithLimit
+                (fun x -> match x.Event with Request claimer -> Some claimer | _ -> None)
+                units
+        let sendingResponses =
+            if elapsed.Completed
+            then requestMessages
+            else responses.AddRange(requestMessages)
+        let units = units - requestMessages.Length
+
+        units, sendingResponses
+
+    let timeAdvance (_, responses: ImmutableArray<_>) =
+        if responses.IsEmpty then infinity else 0.0
+
+    let output (units, responses) =
+        Seq.append
+            (Seq.map Done responses) // リクエストに対して完了を通知する
+            (Seq.singleton (Report units)) // 状態をレポートする
+
+    AtomicModel.create (transition, timeAdvance, output) (maxPrinters, ImmutableArray.Empty)
 
 let printerUser (requestInterval, utilizationTime, numTimesOfUse) claimerId processEnv =
     processModel {
@@ -55,9 +88,10 @@ let printerUser (requestInterval, utilizationTime, numTimesOfUse) claimerId proc
 let main argv =
     let coupledModelBuilder = CoupledModelBuilder()
     let managerModel =
-        printerManager 2
+        printerManagerProcess 2
         |> ProcessModel.createAtomicModel
         |> AtomicModel.withName "Manager"
+    //let managerModel = printerManagerAtomic 2 |> AtomicModel.withName "Manager"
     let managerModelRef = coupledModelBuilder.AddComponent(managerModel)
 
     let translateManagerToUser claimerId = function
@@ -74,7 +108,7 @@ let main argv =
         coupledModelBuilder.Connect(managerModelRef, userModelRef, translateManagerToUser claimerId)
 
     createUser (10.0, 10.0, 3) 1
-    createUser (5.0, 10.0, 6) 2
+    createUser (5.0, 10.0, 4) 2
     createUser (7.0, 15.0, 3) 3
 
     let printEvent (x: EventObserver.ObservedEvent<obj>) =
