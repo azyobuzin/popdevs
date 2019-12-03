@@ -527,8 +527,9 @@ type Builder<'I>() =
                     | _ ->
                         // condVar によって分岐する
                         addVar condVar
-                        let newBody = FsExpr.Sequential(body,
-                            <@@ (if %condVarExpr then 1 else 0), Option<WaitCondition>.None @@>)
+                        let newBody =
+                            FsExpr.Sequential(body,
+                                <@@ (if %condVarExpr then 1 else 0), Option<WaitCondition>.None @@>)
                         lastNode.Expr <- newBody |> excast                            
                     lastNode
                 | _ ->
@@ -552,10 +553,12 @@ type Builder<'I>() =
             let nodes = mapToList Some nodes
 
             #if DEBUG
+            // HasMultipleIncomingEdges がバグってないかチェック
             for i = 0 to nodes.Count - 1 do
                 match nodes.[i], incomingEdges.[i] with
                 | Some node, edges ->
-                    if node.HasMultipleIncomingEdges <> (edges.Count > 1) then
+                    // ルートノードが while 文の場合は回避できないので無視
+                    if node <> rootNode && node.HasMultipleIncomingEdges <> (edges.Count > 1) then
                         failwithf "HasMultipleIncomingEdges = %b, Count = %d"
                             node.HasMultipleIncomingEdges
                             edges.Count

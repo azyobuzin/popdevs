@@ -149,7 +149,6 @@ module ProcessModel =
         let cfg =
             let builderResult = processModel processEnv
             StateReducer.reduceGraph builderResult.ControlFlowGraph
-            //builderResult.ControlFlowGraph
 
         let varsArray =
             cfg.Variables

@@ -46,9 +46,21 @@ module InputEventBuffer =
         match events.Length with
         | 0 -> None
         | 1 -> Some events.[0]
-        | _ -> failwith "takeWithLimit returns more than 1 events."
+        | _ -> failwith "takeWithLimit returned more than 1 events."
 
 [<AutoOpen>]
 module InputEventChooser =
     /// <example><code>let event = InputEventBuffer.take anyEvent inputBuf</code></example>
-    let anyEvent re = Some (ReceivedEvent.getEvent re)
+    let anyEvent re = Some re.Event
+
+    /// <summary>イベントが <paramref name="cond"/> を満たすなら、 <c>Some re.Event</code> を返します。</summary>
+    /// <example><code>let event = InputEventBuffer.take (eventIf (fun e -> e = x)) inputBuf</code></example>
+    let eventIf cond re = if cond re then Some re.Event else None
+
+    /// <summary>イベントが <paramref name="cond"/> を満たすなら、 <c>Some re</code> を返します。</summary>
+    /// <example><code>let event = InputEventBuffer.take (eventIfRe (fun e -> e = x)) inputBuf</code></example>
+    let eventIfRe cond (re: ReceivedEvent<_>) = if cond re then Some re else None
+
+    /// <summary>イベントが <paramref name="cond"/> を満たすなら、 <c>Some ()</code> を返します。</summary>
+    /// <example><code>let event = InputEventBuffer.take (eventIfUnit (fun e -> e = x)) inputBuf</code></example>
+    let eventIfUnit cond (re: ReceivedEvent<_>) = if cond re then Some () else None

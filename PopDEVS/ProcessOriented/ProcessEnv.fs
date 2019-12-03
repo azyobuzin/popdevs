@@ -43,6 +43,8 @@ module ProcessEnv =
     let receiveEvent (chooser: InputEventChooser<'I, 'R>) (_env: ProcessEnv<'I, 'O>) =
         WaitCondition<'I, 'R>(ReceiveEventCondition(chooser))
 
+    // TODO: takeEventsInBuffer
+
     [<CompiledName("EmitOutput")>]
     let emitOutput ev (env: ProcessEnv<'I, 'O>) =
         env.AddOutput(ev)
