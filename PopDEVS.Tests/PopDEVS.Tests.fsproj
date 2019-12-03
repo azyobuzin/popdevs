@@ -9,6 +9,7 @@
   <ItemGroup>
     <Compile Include="ProcessOriented\ProcessModelBuilderTests.fs" />
     <Compile Include="ProcessOriented\StateReducerTests.fs" />
+    <Compile Include="ProcessOriented\BurgerShopExample.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>
 
