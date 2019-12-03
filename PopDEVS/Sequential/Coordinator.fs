@@ -206,7 +206,7 @@ let create (model: DevsModel) =
             let translations =
                 componentIds
                 |> Seq.map (fun id ->
-                    match model.Translations.TryFind(id) with
+                    match RoDic.tryFind id model.Translations with
                     | Some dic -> convertTranslations dic
                     | None -> ImmutableArray.Empty)
                 |> ImmutableArray.CreateRange

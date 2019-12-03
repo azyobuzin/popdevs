@@ -4,6 +4,7 @@ open System.Collections.Immutable
 open FSharp.Quotations
 open FSharp.Quotations.Evaluator
 open FSharp.Quotations.ExprShape
+open FSharpx.Collections
 open MutableCfg
 open PopDEVS
     
@@ -18,7 +19,7 @@ module ProcessModel =
         { StateIndex: int
           WaitCondition: WaitConditionInner option
           TimeAdvance: float
-          Outputs: 'O list }
+          Outputs: DList<'O> }
 
     let private createAtomicModelFromCompiledStates<'I, 'O> (processEnv: ProcessEnv<'I, 'O>)
                                                             (states: ImmutableArray<CompiledState>)
@@ -26,7 +27,7 @@ module ProcessModel =
         let transition (state, env, elapsed, inputBuf: InputEventBuffer<'I>) =
             let canTransition =
                 elapsed.Completed || // すべての出力を送信した
-                List.isEmpty state.Outputs // 出力待ちはない
+                DList.isEmpty state.Outputs // 出力待ちはない
 
             if canTransition then
                 let rec transitionLoop (stateIndex, waitCondition: WaitConditionInner option, outputs) =
@@ -59,7 +60,7 @@ module ProcessModel =
                         let newOutputs = processEnv.Reset()
 
                         // さらに遷移できるかを試す
-                        transitionLoop (nextState, newWaitCondition, outputs @ newOutputs)
+                        transitionLoop (nextState, newWaitCondition, DList.append outputs newOutputs)
 
                     | Some _ ->
                         // 終了状態
@@ -70,7 +71,7 @@ module ProcessModel =
                         stateIndex, waitCondition, outputs
 
                 let nextState, waitCondition, outputs =
-                    transitionLoop (state.StateIndex, state.WaitCondition, [])
+                    transitionLoop (state.StateIndex, state.WaitCondition, DList.empty)
 
                 let timeAdvance =
                     match waitCondition with
@@ -87,7 +88,7 @@ module ProcessModel =
                 state
 
         let timeAdvance state =
-            if List.isEmpty state.Outputs then
+            if DList.isEmpty state.Outputs then
                 state.TimeAdvance
             else
                 // ただちにメッセージを出力したい
@@ -99,7 +100,7 @@ module ProcessModel =
             { StateIndex = 0
               WaitCondition = None
               TimeAdvance = 0.0
-              Outputs = [] }
+              Outputs = DList.empty }
 
         AtomicModel.create (transition, timeAdvance, output) initialState
 

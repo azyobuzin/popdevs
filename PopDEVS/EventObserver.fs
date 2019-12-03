@@ -39,7 +39,7 @@ let connectBoxed (coupledModel: CoupledModelBuilder<_, _>)
                  (observee: ComponentId)
                  (observer: ObserverReference<obj>) =
     let model =
-        match coupledModel.Components.TryFind(observee) with
+        match RoDic.tryFind observee coupledModel.Components with
         | Some x -> x
         | None -> invalidArg (nameof observee) "observee is not a component of the coupled model."
     coupledModel.Connect(

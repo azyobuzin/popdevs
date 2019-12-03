@@ -1,7 +1,6 @@
 namespace PopDEVS
 
 open System.Collections.Generic
-open System.Runtime.CompilerServices
 
 [<AutoOpen>]
 module internal Utils =
@@ -13,9 +12,8 @@ module internal Utils =
         for x in source do list.Add(mapping x)
         list
 
-[<Extension>]
-type internal CollectionExtensions =
-    [<Extension>]
-    static member TryFind(dic: IReadOnlyDictionary<'a, 'b>, key) =
-        let mutable v = Unchecked.defaultof<'b>
-        if dic.TryGetValue(key, &v) then Some v else None
+module internal RoDic =
+    let tryFind key (dic: IReadOnlyDictionary<_, _>) =
+        match dic.TryGetValue(key) with
+        | true, x -> Some x
+        | _ -> None

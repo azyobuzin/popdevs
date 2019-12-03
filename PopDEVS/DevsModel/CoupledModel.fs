@@ -18,12 +18,12 @@ type CoupledModel<'I, 'O> internal (model) =
         (CoupledModelHelper.getInner this).Components
 
     member this.InfluenceesOf(``component``: ComponentId) =
-        match (CoupledModelHelper.getInner this).Translations.TryFind(``component``) with
+        match (CoupledModelHelper.getInner this).Translations |> RoDic.tryFind ``component`` with
         | Some dic -> dic.Keys
         | None -> Seq.empty
 
     member this.IsConnected(src: ComponentId, dst: ComponentId) =
-        match (CoupledModelHelper.getInner this).Translations.TryFind(src) with
+        match (CoupledModelHelper.getInner this).Translations |> RoDic.tryFind src with
         | Some dic -> dic.ContainsKey(dst)
         | None -> false
 
@@ -59,7 +59,7 @@ type CoupledModelBuilder<'I, 'O> internal
         validateComponent (nameof dst) dst
         if src = dst then raise (ArgumentException("src and dst are the same ID."))
 
-        match translations.TryFind(src) with
+        match RoDic.tryFind src translations with
         | Some x -> x.[dst] <- transFunc
         | None ->
             let builder = ImmutableDictionary.CreateBuilder()
@@ -79,12 +79,12 @@ type CoupledModelBuilder<'I, 'O> internal
     member __.Components = components :> IReadOnlyDictionary<_, _>
 
     member __.InfluenceesOf(``component``: ComponentId) =
-        match translations.TryFind(``component``) with
+        match RoDic.tryFind ``component`` translations with
         | Some dic -> dic.Keys
         | None -> Seq.empty
 
     member __.IsConnected(src: ComponentId, dst: ComponentId) =
-        match translations.TryFind(src) with
+        match RoDic.tryFind src translations with
         | Some dic -> dic.ContainsKey(dst)
         | None -> false
 

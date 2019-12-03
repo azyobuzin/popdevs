@@ -71,7 +71,7 @@ type Builder<'I>() =
             if isNull varType then nullArg (nameof varType)
             if String.IsNullOrEmpty(name) then invalidArg (nameof name) "name is null or empty."
 
-            match env.CapturedVariables.TryFind(name) with
+            match RoDic.tryFind name env.CapturedVariables with
             | Some var ->
                 // すでに記録されているので、アサーション
                 if not (obj.Equals(varType, var.FsVar.Type)) then
@@ -100,7 +100,7 @@ type Builder<'I>() =
             env.Variables.Add(var, x)
 
         let markAsEscaped (var: FsVar) =
-            match env.Variables.TryFind(var) with
+            match RoDic.tryFind var env.Variables with
             | Some x -> x.IsEscaped <- true
             | None -> ()
 

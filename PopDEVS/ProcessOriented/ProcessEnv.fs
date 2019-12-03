@@ -1,11 +1,11 @@
 namespace PopDEVS.ProcessOriented
 
-open System.Collections.Generic
+open FSharpx.Collections
 open PopDEVS
 
 type ProcessEnv<'I, 'O> internal () =
     let mutable innerEnv : ISimEnv option = None
-    let outputBuffer = List<'O>()
+    let mutable outputBuffer = DList.empty
 
     member internal __.GetSimEnv() =
         match innerEnv with
@@ -17,13 +17,13 @@ type ProcessEnv<'I, 'O> internal () =
 
     member internal __.Reset() =
         innerEnv <- None
-        let outputs = List.ofSeq outputBuffer
-        outputBuffer.Clear()
+        let outputs = outputBuffer
+        outputBuffer <- DList.empty
         outputs
 
-    member internal this.AddOutput(ev) =
+    member internal this.AddOutput(ev: 'O) =
         this.GetSimEnv() |> ignore // Check state
-        outputBuffer.Add(ev)
+        outputBuffer <- DList.conj ev outputBuffer
 
 module ProcessEnv =
     [<CompiledName("GetTime")>]
