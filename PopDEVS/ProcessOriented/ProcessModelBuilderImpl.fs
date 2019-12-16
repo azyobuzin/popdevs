@@ -415,23 +415,21 @@ type Builder<'I>() =
                         | OneWayBody _ -> ()
                         | _ -> failwith "nodeLast.Expr is not a OneWayBody."
 
-                        let otherExprs = currentBlock.ToArray()
-                        currentBlock.Clear()
-
                         let otherArgsVar, nodeFirst =
-                            match otherExprs.Length with
+                            match currentBlock.Count with
                             | 0 -> None, nodeFirst
                             | _ ->
-                                let argTypes = otherExprs |> Seq.map (fun x -> x.Type) |> Seq.toArray
+                                let argTypes = currentBlock |> mapToArray (fun x -> x.Type)
                                 let otherArgsVar = tmpVar ("combArgs", FSharpType.MakeTupleType(argTypes))
                                 addVar otherArgsVar
 
                                 // nodeFirst の前に代入を挿入する
-                                let assignExpr = FsExpr.VarSet(otherArgsVar, FsExpr.NewTuple(List.ofArray otherExprs))
+                                let assignExpr = FsExpr.VarSet(otherArgsVar, FsExpr.NewTuple(List.ofSeq currentBlock))
                                 Some otherArgsVar, tryPrependExpr assignExpr nodeFirst
 
                         addVar lastArgVar
-                        blocks.Add(((nodeFirst, nodeLast), otherArgsVar, otherExprs.Length, lastArgVar))
+                        blocks.Add(((nodeFirst, nodeLast), otherArgsVar, currentBlock.Count, lastArgVar))
+                        currentBlock.Clear()
                     | Expr x -> currentBlock.Add(x)
 
                 if blocks.Count = 0 then
