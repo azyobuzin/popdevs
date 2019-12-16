@@ -118,14 +118,14 @@ module ProcessModel =
 
             /// 変数の読み書きを、配列の読み書きに書き換える
             let rec convVar = function
-                | Patterns.VarSet (v, e) as x ->
+                | Patterns.VarSet (v, e) ->
                     match indexExpr v with
                     | Some idxExpr ->
                         let assignValueExpr =
                             FsExpr.Coerce(convVar e, typeof<obj>)
                             |> FsExpr.Cast<obj>
                         <@@ (%varsExpr).[%idxExpr] <- %assignValueExpr @@>
-                    | None -> x
+                    | None -> FsExpr.VarSet(v, convVar e)
                 | ShapeVar v ->
                     match indexExpr v with
                     | Some idxExpr -> <@@ (%varsExpr).[%idxExpr] @@> |> unboxExpr v.Type
@@ -141,6 +141,13 @@ module ProcessModel =
                     node.LambdaParameter,
                     convVar node.Expr))
             |> FsExpr.Cast<obj[] -> obj -> int * WaitCondition option>
+
+        #if DEBUG
+        // 未定義の変数が残っていないことを確認
+        let freeVars = expr.GetFreeVars() |> List.ofSeq
+        if not (List.isEmpty freeVars) then
+            failwithf "Free vars: %O" freeVars
+        #endif
 
         expr.Evaluate()
 

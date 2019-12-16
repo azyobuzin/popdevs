@@ -378,6 +378,11 @@ type Builder<'I>() =
                 let var = recordCapturedVar x
                 Expr (FsExpr.Var(var.FsVar))
 
+            | Patterns.VarSet (var, expr) ->
+                match createCfgOrExpr (expr, Assign var) with
+                | Expr x -> Expr (FsExpr.VarSet(var, x))
+                | x -> x
+
             | Patterns.TryFinally _ -> raise (NotSupportedException("TryFinally"))
             | Patterns.TryWith _ -> raise (NotSupportedException("TryWith"))
             | Patterns.WhileLoop _ -> raise (NotSupportedException("WhileLoop"))
