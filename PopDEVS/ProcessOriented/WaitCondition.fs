@@ -87,10 +87,14 @@ type WaitCondition internal (inner: WaitConditionInner) =
 type WaitCondition<'Input, 'Result> internal (inner: WaitConditionInner) =
     inherit WaitCondition(inner)
 
-    /// <summary>左辺または右辺の少なくともどちらかの条件を満たしたときに待機を終了する <see cref="WaitCondition{I,O}"/> を作成します。</summary>
-    static member (|||) (x: WaitCondition<'Input, 'Result>, y: WaitCondition<'Input, 'a>) =
-        WaitCondition<'Input, 'Result option * 'a option>(OrWaitCondition<'Result, 'a>(x.Inner, y.Inner))
+[<AutoOpen>]
+module WaitCondition =
+    /// 左辺または右辺の少なくともどちらかの条件を満たしたときに待機を終了する `WaitCondition<'a, 'b option * 'c option>` を作成します。
+    [<CompiledName("Or")>]
+    let (|||) (x: WaitCondition<'a, 'b>) (y: WaitCondition<'a, 'c>) =
+        WaitCondition<'a, 'b option * 'c option>(OrWaitCondition<'b, 'c>(x.Inner, y.Inner))
 
-    /// <summary>左辺と右辺が条件を満たしたときに待機を終了する <see cref="WaitCondition{I,O}"/> を作成します。</summary>
-    static member (&&&) (x: WaitCondition<'Input, 'Result>, y: WaitCondition<'Input, 'a>) =
-        WaitCondition<'Input, 'Result * 'a>(AndWaitCondition<'Result, 'a>(x.Inner, y.Inner))
+    /// 左辺と右辺が条件を満たしたときに待機を終了する `WaitCondition<'a, 'b * 'c>` を作成します。
+    [<CompiledName("And")>]
+    let (&&&) (x: WaitCondition<'a, 'b>) (y: WaitCondition<'a, 'c>) =
+        WaitCondition<'a, 'b * 'c>(AndWaitCondition<'a, 'c>(x.Inner, y.Inner))

@@ -9,6 +9,7 @@
   <ItemGroup>
     <Compile Include="AssemblyInfo.fs" />
     <Compile Include="Utils.fs" />
+    <Compile Include="Random.fs" />
     <Compile Include="InputEventBuffer.fs" />
     <Compile Include="SimEnv.fs" />
     <Compile Include="DevsModel\DevsModel.fs" />
@@ -31,6 +32,7 @@
   <ItemGroup>
     <PackageReference Include="FSharp.Quotations.Evaluator" Version="2.0.0" />
     <PackageReference Include="FSharpx.Collections" Version="2.1.1" />
+    <PackageReference Include="FsRandom" Version="1.4.0.1" />
     <PackageReference Include="System.Collections.Immutable" Version="1.5.0" />
   </ItemGroup>
 
