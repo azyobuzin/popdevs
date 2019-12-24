@@ -20,11 +20,11 @@ let customer (cid: CustomerId, visitTime, orderDifficulty) =
             // 行列に並ぶ
             emitOutput LineUp processEnv
             // 呼ばれるまで待つ
-            do! receiveEvent (eventIfUnit (fun x -> x.Event = Called)) processEnv
+            do! receiveEvent (eventIfUnit ((=) Called)) processEnv
             // 注文をする
             emitOutput (Order orderDifficulty) processEnv
             // 商品を受け取る
-            do! receiveEvent (eventIfUnit (fun x -> x.Event = ReceiveGoods)) processEnv
+            do! receiveEvent (eventIfUnit ((=) ReceiveGoods)) processEnv
         })
     |> ProcessModel.createAtomicModel
     |> AtomicModel.withName (sprintf "Customer %d" cid)
@@ -35,13 +35,13 @@ let queue =
     let transition ((queue, dequeued), _, elapsed, inputBuf) =
         // Enqueue イベントを処理
         let queue =
-            inputBuf |> InputEventBuffer.take (fun x ->
-                match x.Event with Enqueue cid -> Some cid | _ -> None)
+            inputBuf
+            |> InputEventBuffer.take (function Enqueue cid -> Some cid | _ -> None)
             |> Seq.fold (fun q cid -> Queue.conj cid q) queue
 
         // Dequeue イベントを処理
         let dequeued = if elapsed.Completed then DList.empty else dequeued
-        inputBuf |> InputEventBuffer.takeWithLimit (eventIfUnit (fun x -> x.Event = Dequeue)) queue.Length
+        inputBuf |> InputEventBuffer.takeWithLimit (eventIfUnit ((=) Dequeue)) queue.Length
             |> Seq.fold (fun (q, d) () -> let x, q = Queue.uncons q in q, DList.conj x d) (queue, dequeued)
 
     let timeAdvance (_, d) = if DList.isEmpty d then infinity else 0.0
@@ -60,13 +60,13 @@ let clerk =
                 emitOutput WaitCustomer processEnv
                 let! cid =
                     processEnv |> receiveEvent
-                        (fun x -> match x.Event with NextCustomer cid -> Some cid | _ -> None)
+                        (function NextCustomer cid -> Some cid | _ -> None)
                 // 行列の先頭の人を呼び出す
                 emitOutput (CallCustomer cid) processEnv
                 // 注文を待つ
                 let! difficulty =
                     processEnv |> receiveEvent
-                        (fun x -> match x.Event with ReceiveOrder d -> Some d | _ -> None)
+                        (function ReceiveOrder d -> Some d | _ -> None)
                 // 注文を処理する
                 do! wait difficulty processEnv
                 // 商品を渡す

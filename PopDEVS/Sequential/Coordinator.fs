@@ -4,8 +4,10 @@ open System.Collections.Generic
 open System.Collections.Immutable
 open PopDEVS
 
+type private ReceivedEvent = { Event: obj; Time: float }
+
 type private InputEventBufferImpl() =
-    let events = LinkedList<ReceivedEvent<obj>>()
+    let events = LinkedList<ReceivedEvent>()
 
     member __.IsEmpty =
         events.Count = 0
@@ -14,7 +16,7 @@ type private InputEventBufferImpl() =
         if not this.IsEmpty && events.Last.Value.Time > time then
             invalidOp "Cannot add an event older than the last event."
 
-        events.AddLast({ Time = time; Event = event }) |> ignore
+        events.AddLast({ Event = event; Time = time }) |> ignore
 
     interface IInputEventBuffer with
         member __.Take(chooser, limit) =
@@ -29,7 +31,7 @@ type private InputEventBufferImpl() =
             let mutable node = events.First
             while (not (isNull node)) && (limitTest ()) do
                 let nextNode = node.Next
-                match chooser node.Value with
+                match chooser node.Value.Event with
                 | Some x ->
                     resultBuilder.Add(x)
                     events.Remove(node)

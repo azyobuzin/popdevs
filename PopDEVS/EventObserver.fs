@@ -12,10 +12,11 @@ type ObserverReference<'a> = ComponentReference<ObservedEvent<'a>, VoidEvent>
 /// <summary>イベントが入力されると <paramref name="onEvent"/> を呼び出す <see cref="AtomicModel{I,O}"/> を作成します。</summary>
 let createObserverModel (onEvent: ObservedEvent<'a> -> unit) : ObserverModel<'a> =
     let transition ((), env, _, inputBuf) =
+        let time = SimEnv.getTime env
         let fire () =
             inputBuf
-            |> InputEventBuffer.take (fun re -> Some {
-                re.Event with ObservedEvent.Time = re.Time })
+            |> InputEventBuffer.take (fun ev -> Some {
+                ev with ObservedEvent.Time = time })
             |> Seq.iter onEvent
         SimEnv.runIO fire env
     let timeAdvance () = infinity

@@ -2,27 +2,15 @@ namespace PopDEVS
 
 open System.Collections.Immutable
 
-type ReceivedEvent<'a> =
-    { Time: float; Event: 'a }
-
-    static member getTime (re: ReceivedEvent<'a>) =
-        re.Time
-
-    static member getEvent (re: ReceivedEvent<'a>) =
-        re.Event
-
-type InputEventChooser<'a, 'b> = ReceivedEvent<'a> -> 'b option
+type InputEventChooser<'a, 'b> = 'a -> 'b option
 
 type internal IInputEventBuffer =
     abstract Take : chooser: (InputEventChooser<obj, 'a>) * limit: int option -> ImmutableArray<'a>
     // TODO: Peek
 
 type InputEventBuffer<'a> internal (impl: IInputEventBuffer) =
-    static let unboxEvent (re: ReceivedEvent<obj>) =
-        { Time = re.Time; Event = unbox re.Event }
-
     member __.Take(chooser: InputEventChooser<'a, 'b>, limit) =
-        impl.Take(unboxEvent >> chooser, limit)
+        impl.Take(unbox >> chooser, limit)
 
 module InputEventBuffer =
     /// <summary>入力イベントバッファーから、条件を満たすイベントを取り出します。</summary>
@@ -50,17 +38,10 @@ module InputEventBuffer =
 
 [<AutoOpen>]
 module InputEventChooser =
-    /// <example><code>let event = InputEventBuffer.take anyEvent inputBuf</code></example>
-    let anyEvent re = Some re.Event
-
-    /// <summary>イベントが <paramref name="cond"/> を満たすなら、 <c>Some re.Event</code> を返します。</summary>
+    /// <summary>イベントが <paramref name="cond"/> を満たすなら、 <c>Some ev</code> を返します。</summary>
     /// <example><code>let event = InputEventBuffer.take (eventIf (fun e -> e = x)) inputBuf</code></example>
-    let eventIf cond re = if cond re then Some re.Event else None
-
-    /// <summary>イベントが <paramref name="cond"/> を満たすなら、 <c>Some re</code> を返します。</summary>
-    /// <example><code>let event = InputEventBuffer.take (eventIfRe (fun e -> e = x)) inputBuf</code></example>
-    let eventIfRe cond (re: ReceivedEvent<_>) = if cond re then Some re else None
+    let eventIf cond ev = if cond ev then Some ev else None
 
     /// <summary>イベントが <paramref name="cond"/> を満たすなら、 <c>Some ()</code> を返します。</summary>
     /// <example><code>let event = InputEventBuffer.take (eventIfUnit (fun e -> e = x)) inputBuf</code></example>
-    let eventIfUnit cond (re: ReceivedEvent<_>) = if cond re then Some () else None
+    let eventIfUnit cond ev = if cond ev then Some () else None
