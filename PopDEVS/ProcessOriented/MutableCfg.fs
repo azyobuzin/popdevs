@@ -23,18 +23,12 @@ type MutableVar =
 [<ReferenceEquality>]
 type MutableNode =    
     { /// 前回のイベントの戻り値を受け取る obj 型変数
-      mutable LambdaParameter: FsVar
+      mutable LambdaParameter: FsVar option
       /// 処理を行い、次に遷移する辺のインデックスを返す式
       mutable Expr: FsExpr<int * WaitCondition option>
-      /// 複数の入力辺が存在する可能性があるか
-      mutable HasMultipleIncomingEdges: bool
-      mutable ReturnsWaitCondition: bool
-      Edges: List<MutableNode> }
-
-// TODO: こうするべきだった案
-// LambdaParameter: FsVar option
-// IncomingEdges: HashSet<MutableNode>
-// OutgoingEdges: List<(MutableNode * returnsWaitCondition: bool)>
+      IncomingEdges: HashSet<MutableNode>
+      /// 出力辺（行き先 * 待機条件を返すか）
+      OutgoingEdges: List<MutableNode * bool> }
 
 /// `FSharp.Quotations.Expr` を `FSharp.Quotations.Expr<int * WaitCondition option>` に変換する
 let excast (source: FsExpr) =
@@ -87,11 +81,9 @@ let (|ReturnsWaitCondition|_|) expr =
     | _ ->
         invalidArg (nameof expr) "The last expression is not NewTuple."
 
-/// `node.Expr` が `node.LambdaParameter` を参照しているならば `true` を返す
-let refToParam node =
-    node.Expr.GetFreeVars() |> Seq.contains node.LambdaParameter
-
-let connectMutNode (left, right) = left.Edges.Add(right)
+let connectMutNode left right returnsWaitCondition =
+    left.OutgoingEdges.Add((right, returnsWaitCondition))
+    right.IncomingEdges.Add(left)
 
 let enumerateNodes rootNode =
     let nodeList = List()
@@ -100,7 +92,7 @@ let enumerateNodes rootNode =
     let rec traverse node =
         if nodeSet.Add(node) then
             nodeList.Add(node)
-            node.Edges |> Seq.iter traverse
+            node.OutgoingEdges |> Seq.iter (fst >> traverse)
 
     traverse rootNode
     nodeList :> IReadOnlyList<MutableNode>
@@ -117,19 +109,19 @@ let createImmutableGraph (vars, rootNode) : ImmutableGraph =
         let nodesBuilder = ImmutableArray.CreateBuilder(nodes.Count)
         let edgesBuilder = ImmutableArray.CreateBuilder(0)
 
-        for index in 0 .. nodes.Count - 1 do
+        for index = 0 to nodes.Count - 1 do
             let mutNode = nodes.[index]
 
-            edgesBuilder.Capacity <- mutNode.Edges.Count
-            mutNode.Edges
-                |> Seq.map (fun x -> nodeDic.[x])
+            edgesBuilder.Capacity <- mutNode.OutgoingEdges.Count
+            mutNode.OutgoingEdges
+                |> Seq.map (fun (x, _) -> nodeDic.[x])
                 |> edgesBuilder.AddRange
 
             let imNode: ImmutableNode =
                 { Index = index
                   LambdaParameter = mutNode.LambdaParameter
                   Expr = mutNode.Expr
-                  HasMultipleIncomingEdges = mutNode.HasMultipleIncomingEdges
+                  HasMultipleIncomingEdges = mutNode.IncomingEdges.Count > 0
                   Edges = edgesBuilder.MoveToImmutable() }
             nodesBuilder.Add(imNode)
 
@@ -138,24 +130,5 @@ let createImmutableGraph (vars, rootNode) : ImmutableGraph =
     { Variables = ImmutableArray.CreateRange(vars)
       Nodes = nodes }
 
-let createMutableNodes (graph: ImmutableGraph) =
-    let mutableNodes =
-        let toMutableNode (x: ImmutableNode) =
-            let returnsWaitCondition =
-                match x.Expr with
-                | ReturnsWaitCondition -> true
-                | _ -> false
-            { LambdaParameter = x.LambdaParameter
-              Expr = x.Expr
-              HasMultipleIncomingEdges = x.HasMultipleIncomingEdges
-              ReturnsWaitCondition = returnsWaitCondition
-              Edges = List() }
-        graph.Nodes |> Seq.map toMutableNode |> Seq.toArray
-
-    for i in 0 .. mutableNodes.Length - 1 do
-        let edges =
-            graph.Nodes.[i].Edges
-            |> Seq.map (fun x -> mutableNodes.[x])
-        mutableNodes.[i].Edges.AddRange(edges)
-
-    mutableNodes
+let createMutableNodes (graph: ImmutableGraph) : MutableNode[] =
+    failwith "Do not use createMutableNodes."

@@ -34,10 +34,11 @@ type Variable =
 type Node =
     { Index: int
       /// 前回のイベントの戻り値を受け取る obj 型変数
-      LambdaParameter: FsVar
+      LambdaParameter: FsVar option
       /// 処理を行い、次に遷移する辺のインデックスとイベントを返す式
       Expr: FsExpr<int * WaitCondition option>
       /// 複数の入力辺が存在するか
+      // TODO: 本当に必要か検討
       HasMultipleIncomingEdges: bool
       /// このノードを始点とする辺の終点ノードのインデックス
       Edges: ImmutableArray<int> }
@@ -60,7 +61,8 @@ type Graph =
                 .Append("HasMultipleIncomingEdges = ")
                 .Append(node.HasMultipleIncomingEdges)
                 .AppendLine()
-                .Append(node.LambdaParameter.Name)
+                .Append(match node.LambdaParameter with
+                        | Some x -> x.Name | None -> "_")
                 .AppendLine(" ->")
                 .AppendLine(string node.Expr)
                 .Append("Edges: ")

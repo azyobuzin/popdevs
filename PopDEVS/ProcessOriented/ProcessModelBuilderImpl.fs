@@ -42,7 +42,7 @@ let internal newEnv () =
 
 type Builder<'I>() =
     let doNotCall () =
-        invalidOp "Do not call methods of Builder from your code."
+        invalidOp "Do not call methods of Builder from your code directly."
 
     member __.Bind<'a, 'b>(_computation: WaitCondition<'I, 'a>, _binder: 'a -> 'b) : 'b =
         doNotCall ()
