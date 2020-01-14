@@ -20,6 +20,8 @@ type private Tree =
     | Bind of cont: Tree
     | Zero
 
+let private unitExpr = <@@ () @@>
+
 module private BuilderPatterns =
     let (|CallBind|_|) builder = function
         | Patterns.Call (Some (Patterns.Value (receiver, _)), method, [computation; binder])
@@ -67,10 +69,11 @@ let rec private continueWith cont tree =
         | Tree.Let (x, y) -> Tree.Let (x, f y)
         | Tree.If (x, y, z) -> Tree.If (x, y, f z)
         | Tree.While (x, y, z) -> Tree.While (x, y, f z)
-        | Tree.Bind (x, y) -> Tree.Bind (x, f y)
+        | Tree.Bind x -> Tree.Bind (f x)
         | Tree.Zero -> cont
     f tree
 
+/// `Tree.Bind` が含まれない `Tree` ならば、 `FsExpr` を作成する
 let rec private rebuildExpr tree =
     let rec rebuild tree stack =
         match tree with
@@ -93,57 +96,47 @@ let rec private rebuildExpr tree =
         | Tree.Bind _ -> None
         | Tree.Zero -> Some (stackToExpr stack)
     and stackToExpr = function
-        | [] -> <@@ () @@>
+        | [] -> unitExpr
         | [expr] -> expr
         | expr::stack -> FsExpr.Sequential(stackToExpr stack, expr)
     rebuild tree []
 
+let private reduceTree tree =
+    match rebuildExpr tree with
+    | Some expr -> Tree.Expr (expr, Tree.Zero)
+    | None -> tree
+
 let toTree (input: ProcessModelBuilderResult<'I>) =
     let builder = input.Builder
-    let capturedVars = Dictionary<string, FsVar * obj>()
 
-    let recordCapturedVar (value, varType, name) =
-        if isNull varType then nullArg (nameof varType)
-        if String.IsNullOrEmpty(name) then invalidArg (nameof name) "name is null or empty."
-
-        match RoDic.tryFind name capturedVars with
-        | Some (var, existingValue) ->
-            // すでに記録されているので、アサーション
-            if not (obj.Equals(value, existingValue)) then
-                failwithf "Value mismatch (Expected: %O, Actual: %O)" existingValue value
-
-            var
-        | None ->
-            // 新規追加
-            let var = FsVar(name, varType)
-            env.CapturedVariables.Add(name, (fsVar, value))
-            var
+    let mutable tmpVarCount = 0
+    let tmpVar (name, ty) =
+        tmpVarCount <- tmpVarCount + 1
+        FsVar(sprintf "%s%d" name tmpVarCount, ty)
 
     let rec toTreeCore = function
-        | Patterns.Let (var, expr, cont) ->
+        | Patterns.Let (var, expr, body) ->
             toTreeCore expr
-            |> continueWith (Tree.Let (var, toTreeCore cont)) // TODO: let if needed
+            |> continueWith (letIfNeeded (var, body))
+            |> reduceTree
 
         | Patterns.IfThenElse (guard, thenExpr, elseExpr) ->
             let guardTree = toTreeCore guard
             let thenTree = toTreeCore thenExpr
             let elseTree = toTreeCore elseExpr
-            let tree = guardTree |> continueWith (Tree.If (thenTree, elseTree, Tree.Zero))
-            match rebuildExpr tree with
-                | Some expr -> Tree.Expr (expr, Tree.Zero)
-                | None -> tree
+            guardTree
+            |> continueWith (Tree.If (thenTree, elseTree, Tree.Zero))
+            |> reduceTree
 
         | BuilderPatterns.CallWhile builder (guard, body) ->
             let guardTree = toTreeCore guard
-            let bodyTree = toTreeCore OneWayBody
-            let tree = Tree.While (guardTree, bodyTree, Tree.Zero)
-            match rebuildExpr tree with
-                | Some expr -> Tree.Expr (expr, Tree.Zero)
-                | None -> tree
+            let bodyTree = toTreeCore body
+            Tree.While (guardTree, bodyTree, Tree.Zero)
+            |> reduceTree
 
         | BuilderPatterns.CallBind builder (expr, var, cont) ->
             toTreeCore expr
-            |> continueWith (Tree.Bind (Tree.Let (var, toTreeCore cont))) // TODO: let if needed
+            |> continueWith (Tree.Bind (letIfNeeded (var, cont)))
 
         | BuilderPatterns.CallZero builder | DerivedPatterns.Unit ->
             Tree.Zero
@@ -155,7 +148,56 @@ let toTree (input: ProcessModelBuilderResult<'I>) =
         | BuilderPatterns.CallDelay builder x ->
             toTreeCore x
 
+        | Patterns.Call (Some (Patterns.Value (receiver, _)), method, _)
+                when obj.Equals(receiver, builder) ->
+            failwithf "Do not call '%s'." method.Name
 
+        | Patterns.VarSet (var, expr) ->
+            let setWithLet () =
+                let tv = tmpVar ("varSet", var.Type)
+                Tree.Let (tv, Tree.Expr (FsExpr.VarSet(var, FsExpr.Var(tv)), Tree.Zero))
+            let rec contVarSet = function
+                | Tree.Expr (x, Tree.Zero) -> Tree.Expr (FsExpr.VarSet(var, x), Tree.Zero)
+                | Tree.Expr (x, y) -> Tree.Expr (x, contVarSet y)
+                | Tree.Let (x, y) -> Tree.Let (x, contVarSet y)
+                | Tree.If (x, y, Tree.Zero) -> Tree.If (x, y, setWithLet())
+                | Tree.If (x, y, z) -> Tree.If (x, y, contVarSet z)
+                | Tree.While (x, y, z) -> Tree.While (x, y, contVarSet z)
+                | Tree.Bind Tree.Zero -> Tree.Bind (setWithLet())
+                | Tree.Bind x -> Tree.Bind (contVarSet x)
+                | Tree.Zero -> Tree.Expr (FsExpr.VarSet(var, unitExpr), Tree.Zero)
+            toTreeCore expr |> contVarSet
+
+        | Patterns.TryFinally _ -> raise (NotSupportedException("TryFinally"))
+        | Patterns.TryWith _ -> raise (NotSupportedException("TryWith"))
+
+        | ExprShape.ShapeCombination (shape, args) as expr ->
+            let trees = args |> List.map (fun e -> toTreeCore e, e.Type)
+            if trees |> Seq.exists (fst >> rebuildExpr >> Option.isNone) then
+                // Bind があるので、変数に退避する
+                let f (accTree, argExprs) (tree, ty) =
+                    let tv = tmpVar ("combArg", ty)
+                    let letTree = tree |> continueWith (Tree.Let (tv, Tree.Zero))
+                    let accTree = accTree |> continueWith letTree
+                    accTree, FsExpr.Var(tv)::argExprs
+                let preludeTree, newArgs = trees |> List.fold f (Tree.Zero, [])
+                let expr = ExprShape.RebuildShapeCombination(shape, List.rev newArgs)
+                preludeTree |> continueWith (Tree.Expr (expr, Tree.Zero))
+            else
+                // toTree では式の変形を行わないので、入力された式をそのまま使う
+                Tree.Expr (expr, Tree.Zero)
+
+        | expr -> Tree.Expr (expr, Tree.Zero)
+
+    and letIfNeeded (var, expr) =
+        let rec isUsed = function
+            | ExprShape.ShapeVar x -> x = var
+            | ExprShape.ShapeLambda (_, x) -> isUsed x
+            | ExprShape.ShapeCombination (_, exprs) -> List.exists isUsed exprs
+        let tree = toTreeCore expr
+        if isUsed expr then Tree.Let (var, tree) else tree
+
+    toTreeCore input.Expr
 
 let build (input: ProcessModelBuilderResult<'I>) =
     let builder = input.Builder
