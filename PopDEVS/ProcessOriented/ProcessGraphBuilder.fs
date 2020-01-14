@@ -17,7 +17,7 @@ type private Tree =
     | Let of FsVar * cont: Tree
     | If of t: Tree * f: Tree * cont: Tree
     | While of cond: Tree * body: Tree * cont: Tree
-    | Bind of FsVar * cont: Tree
+    | Bind of cont: Tree
     | Zero
 
 module private BuilderPatterns =
@@ -122,7 +122,7 @@ let toTree (input: ProcessModelBuilderResult<'I>) =
     let rec toTreeCore = function
         | Patterns.Let (var, expr, cont) ->
             toTreeCore expr
-            |> continueWith (Tree.Let (var, toTreeCore cont))
+            |> continueWith (Tree.Let (var, toTreeCore cont)) // TODO: let if needed
 
         | Patterns.IfThenElse (guard, thenExpr, elseExpr) ->
             let guardTree = toTreeCore guard
@@ -143,12 +143,13 @@ let toTree (input: ProcessModelBuilderResult<'I>) =
 
         | BuilderPatterns.CallBind builder (expr, var, cont) ->
             toTreeCore expr
-            |> continueWith (Tree.Bind (var, toTreeCore cont))
+            |> continueWith (Tree.Bind (Tree.Let (var, toTreeCore cont))) // TODO: let if needed
 
         | BuilderPatterns.CallZero builder | DerivedPatterns.Unit ->
             Tree.Zero
 
-        | BuilderPatterns.CallCombine builder (left, right) ->
+        | BuilderPatterns.CallCombine builder (left, right)
+        | Patterns.Sequential (left, right) ->
             toTreeCore left |> continueWith (toTreeCore right)
 
         | BuilderPatterns.CallDelay builder x ->
