@@ -15,12 +15,30 @@ type private CfgEnv =
 type private Tree =
     | Expr of FsExpr * cont: Tree
     | Let of FsVar * cont: Tree
+    | LetRec of (FsVar * FsExpr) list * cont: Tree
     | If of t: Tree * f: Tree * cont: Tree
     | While of cond: Tree * body: Tree * cont: Tree
     | Bind of cont: Tree
     | Zero
 
+type private VarUsage =
+    | NotUsedFar
+    | UsedFar
+    | Escaped
+
+let maxUsage = function
+    | Escaped, _ | _, Escaped -> Escaped
+    | UsedFar, _ | _, UsedFar -> UsedFar
+    | _ -> NotUsedFar
+
 let private unitExpr = <@@ () @@>
+
+let private varIsUsed var =
+    let rec f = function
+        | ExprShape.ShapeVar x -> x = var
+        | ExprShape.ShapeLambda (_, x) -> f x
+        | ExprShape.ShapeCombination (_, exprs) -> List.exists f exprs
+    f
 
 module private BuilderPatterns =
     let (|CallBind|_|) builder = function
@@ -67,6 +85,7 @@ let rec private continueWith cont tree =
             | _ -> Tree.Expr (x, cont)
         | Tree.Expr (x, y) -> Tree.Expr (x, f y)
         | Tree.Let (x, y) -> Tree.Let (x, f y)
+        | Tree.LetRec (x, y) -> Tree.LetRec (x, f y)
         | Tree.If (x, y, z) -> Tree.If (x, y, f z)
         | Tree.While (x, y, z) -> Tree.While (x, y, f z)
         | Tree.Bind x -> Tree.Bind (f x)
@@ -82,6 +101,16 @@ let rec private rebuildExpr tree =
             let expr = stackToExpr stack
             match rebuild cont [] with
             | Some body -> Some (FsExpr.Let(var, expr, body))
+            | None -> None
+        | Tree.LetRec (bindings, cont) ->
+            let expr = stackToExpr stack
+            match rebuild cont [] with
+            | Some body ->
+                Some (
+                    let letRecExpr = FsExpr.LetRecursive(bindings, body)
+                    match expr with
+                    | DerivedPatterns.Unit -> letRecExpr
+                    | _ -> FsExpr.Sequential(expr, letRecExpr))
             | None -> None
         | Tree.If (t, f, cont) ->
             match rebuildExpr t, rebuildExpr f with
@@ -118,6 +147,15 @@ let toTree (input: ProcessModelBuilderResult<'I>) =
         | Patterns.Let (var, expr, body) ->
             toTreeCore expr
             |> continueWith (letIfNeeded (var, body))
+            |> reduceTree
+
+        | Patterns.LetRecursive (bindings, body) ->
+            #if DEBUG
+            if bindings |> List.exists (snd >> toTreeCore >> rebuildExpr >> Option.isNone) then
+                failwith "Too complex let rec"
+            #endif
+
+            Tree.LetRec (bindings, toTreeCore body)
             |> reduceTree
 
         | Patterns.IfThenElse (guard, thenExpr, elseExpr) ->
@@ -160,6 +198,7 @@ let toTree (input: ProcessModelBuilderResult<'I>) =
                 | Tree.Expr (x, Tree.Zero) -> Tree.Expr (FsExpr.VarSet(var, x), Tree.Zero)
                 | Tree.Expr (x, y) -> Tree.Expr (x, contVarSet y)
                 | Tree.Let (x, y) -> Tree.Let (x, contVarSet y)
+                | Tree.LetRec (x, y) -> Tree.LetRec (x, contVarSet y)
                 | Tree.If (x, y, Tree.Zero) -> Tree.If (x, y, setWithLet())
                 | Tree.If (x, y, z) -> Tree.If (x, y, contVarSet z)
                 | Tree.While (x, y, z) -> Tree.While (x, y, contVarSet z)
@@ -190,12 +229,8 @@ let toTree (input: ProcessModelBuilderResult<'I>) =
         | expr -> Tree.Expr (expr, Tree.Zero)
 
     and letIfNeeded (var, expr) =
-        let rec isUsed = function
-            | ExprShape.ShapeVar x -> x = var
-            | ExprShape.ShapeLambda (_, x) -> isUsed x
-            | ExprShape.ShapeCombination (_, exprs) -> List.exists isUsed exprs
         let tree = toTreeCore expr
-        if isUsed expr then Tree.Let (var, tree) else tree
+        if varIsUsed var expr then Tree.Let (var, tree) else tree
 
     toTreeCore input.Expr
 
@@ -228,31 +263,66 @@ let build (input: ProcessModelBuilderResult<'I>) =
             env.CapturedVariables.Add(name, newVar)
             env.Variables.Add(fsVar, newVar)
             newVar
-    
-    /// let された変数を env に追加する
-    let addVar (var: FsVar) =
-        let x = { FsVar = var
-                    CapturedValue = None
-                    IsEscaped = false }
-        env.Variables.Add(var, x)
-    
-    let markAsEscaped (var: FsVar) =
-        match RoDic.tryFind var env.Variables with
-        | Some x -> x.IsEscaped <- true
-        | None -> ()
 
-    let rec hasBind = function
-        | BuilderPatterns.CallBind builder _ -> true
-        | ExprShape.ShapeCombination (_shape, args) ->
-            List.exists hasBind args
-        | _ -> false
+    let rec findVars tree =
+        let rec usageInExpr var =
+            let rec f = function
+                | ExprShape.ShapeVar x ->
+                    if x = var then UsedFar else NotUsedFar
+                | ExprShape.ShapeLambda (_, x) ->
+                    match f x with
+                    | NotUsedFar -> NotUsedFar
+                    | _ -> Escaped
+                | ExprShape.ShapeCombination (_, exprs) ->
+                    exprs |> List.fold (fun acc x -> maxUsage (acc, (f x)))
+            f
+        and usageInTree var =
+            let rec f = function
+                | Tree.Expr (expr, cont) -> maxUsage (usageInExpr var expr, f cont)
+                | Tree.Let (_, cont) | Tree.Bind cont -> f cont
+                | Tree.If (x, y, cont) | Tree.While (x, y, cont) ->
+                    maxUsage (maxUsage (f x, f y), f cont)
+                | Tree.Zero -> NotUsedFar
+            f
 
-    let rec createNode (expr: FsExpr, kind: TailKind) =
-        match createNodeOrExpr (expr, kind) with
-        | Node nodes -> nodes
-        | Expr expr ->
-            raise (NotImplementedException())
+        match tree with
+        | Tree.Expr (_, cont) | Tree.Bind cont ->
+            findVars cont
+        | Tree.If (x, y, z)  | Tree.While (x, y, z) ->
+            findVars x; findVars y; findVars z
+        | Tree.Zero -> ()
+        | Tree.Let (var, cont) ->
+            let usage =
+                match cont with
+                | Tree.Expr (expr, exprCont) ->
+                    // 直後の Expr でしか使われないなら、ただの let 式にできる
+                    match usageInExpr var expr with
+                    | Escaped -> Escaped
+                    | _ -> usageInTree exprCont
+                | _ -> usageInTree cont
+            let x =
+                match usage with
+                | NotUsedFar -> None
+                | UsedFar -> Some false
+                | Escaped -> Some true
+            x |> Option.iter (fun escaped ->
+                let r = { FsVar = var
+                          CapturedValue = None
+                          IsEscaped = escaped }
+                env.Variables.Add(var, r))
 
-    and createNodeOrExpr (expr, kind) =
-        match expr with
-        | _ when hasBind expr -> Expr expr
+    let rec createNode = function
+        | Tree.Expr (x, Tree.Expr (y, z)) ->
+            createNode (Tree.Expr (FsExpr.Sequential(x, y), z))
+
+        | Tree.Expr (x, Tree.Let (var, cont)) ->
+            if env.Variables.ContainsKey(var) then
+                createNode (Tree.Expr (FsExpr.VarSet(var, x), cont))
+            else
+                match cont with
+                | Expr.Tree (contExpr, contCont) ->
+                    createNode (Tree.Expr (FsExpr.Let(var, x, contExpr), contCont))
+                | _ ->
+                    createNode (Tree.Expr (x, cont))
+
+        // TODO

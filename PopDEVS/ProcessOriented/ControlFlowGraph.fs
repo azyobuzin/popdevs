@@ -37,9 +37,6 @@ type Node =
       LambdaParameter: FsVar option
       /// 処理を行い、次に遷移する辺のインデックスとイベントを返す式
       Expr: FsExpr<int * WaitCondition option>
-      /// 複数の入力辺が存在するか
-      // TODO: 本当に必要か検討
-      HasMultipleIncomingEdges: bool
       /// このノードを始点とする辺の終点ノードのインデックス
       Edges: ImmutableArray<int> }
 
@@ -58,8 +55,6 @@ type Graph =
             let node = this.Nodes.[i]
             let firstLine = sprintf "=== Node %d ===" i
             sb.AppendLine(firstLine)
-                .Append("HasMultipleIncomingEdges = ")
-                .Append(node.HasMultipleIncomingEdges)
                 .AppendLine()
                 .Append(match node.LambdaParameter with
                         | Some x -> x.Name | None -> "_")

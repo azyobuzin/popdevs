@@ -23,9 +23,9 @@ type MutableVar =
 [<ReferenceEquality>]
 type MutableNode =    
     { /// 前回のイベントの戻り値を受け取る obj 型変数
-      mutable LambdaParameter: FsVar option
+      LambdaParameter: FsVar option
       /// 処理を行い、次に遷移する辺のインデックスを返す式
-      mutable Expr: FsExpr<int * WaitCondition option>
+      Expr: FsExpr<int * WaitCondition option>
       IncomingEdges: HashSet<MutableNode>
       /// 出力辺（行き先 * 待機条件を返すか）
       OutgoingEdges: List<MutableNode * bool> }
@@ -121,7 +121,6 @@ let createImmutableGraph (vars, rootNode) : ImmutableGraph =
                 { Index = index
                   LambdaParameter = mutNode.LambdaParameter
                   Expr = mutNode.Expr
-                  HasMultipleIncomingEdges = mutNode.IncomingEdges.Count > 0
                   Edges = edgesBuilder.MoveToImmutable() }
             nodesBuilder.Add(imNode)
 
