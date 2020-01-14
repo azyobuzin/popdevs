@@ -2,7 +2,7 @@
 
   <PropertyGroup>
     <TargetFramework>netstandard2.0</TargetFramework>
-    <DocumentationFile>bin\$(Configuration)\$(TargetFramework)\$(AssemblyName).xml</DocumentationFile>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
     <LangVersion>preview</LangVersion>
   </PropertyGroup>
 
@@ -23,8 +23,7 @@
     <Compile Include="ProcessOriented\ControlFlowGraph.fs" />
     <Compile Include="ProcessOriented\MutableCfg.fs" />
     <Compile Include="ProcessOriented\ProcessModelBuilderResult.fs" />
-    <Compile Include="ProcessOriented\ProcessModelBuilderImpl.fs" />
-    <Compile Include="ProcessOriented\StateReducer.fs" />
+    <Compile Include="ProcessOriented\ProcessGraphBuilder.fs" />
     <Compile Include="ProcessOriented\CompiledState.fs" />
     <Compile Include="ProcessOriented\ProcessModel.fs" />
   </ItemGroup>

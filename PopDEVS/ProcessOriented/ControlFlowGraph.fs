@@ -1,4 +1,4 @@
-module PopDEVS.ProcessOriented.ControlFlowGraph
+module PopDEVS.ProcessOriented.ControlFlowGraph // TODO: Rename to ProcessGraph
 
 open System
 open System.Collections.Immutable
