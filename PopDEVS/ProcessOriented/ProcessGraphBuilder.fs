@@ -21,6 +21,14 @@ type private Tree =
     | Bind of cont: Tree
     | Zero
 
+let private (|SimpleExpr|_|) = function
+    | Tree.Expr (expr, Tree.Zero) -> Some expr
+    | _ -> None
+
+let private isSimpleExpr = function
+    | SimpleExpr _ -> true
+    | _ -> false
+
 type private VarUsage =
     | NotUsedFar
     | UsedFar
@@ -150,10 +158,8 @@ let toTree (input: ProcessModelBuilderResult<'I>) =
             |> reduceTree
 
         | Patterns.LetRecursive (bindings, body) ->
-            #if DEBUG
-            if bindings |> List.exists (snd >> toTreeCore >> rebuildExpr >> Option.isNone) then
+            if bindings |> List.exists (snd >> toTreeCore >> isSimpleExpr) then
                 failwith "Too complex let rec"
-            #endif
 
             Tree.LetRec (bindings, toTreeCore body)
             |> reduceTree
@@ -210,21 +216,29 @@ let toTree (input: ProcessModelBuilderResult<'I>) =
         | Patterns.TryFinally _ -> raise (NotSupportedException("TryFinally"))
         | Patterns.TryWith _ -> raise (NotSupportedException("TryWith"))
 
-        | ExprShape.ShapeCombination (shape, args) as expr ->
+        | ExprShape.ShapeCombination (shape, args) ->
             let trees = args |> List.map (fun e -> toTreeCore e, e.Type)
-            if trees |> Seq.exists (fst >> rebuildExpr >> Option.isNone) then
+
+            let exprsOpt =
+                let rec f = function
+                    | (SimpleExpr e, _) :: ts ->
+                        f ts |> Option.map (fun es -> e :: es)
+                    | _ -> None
+                f trees
+
+            match exprsOpt with
+            | Some exprs ->
+                Tree.Expr (ExprShape.RebuildShapeCombination(shape, exprs), Tree.Zero)
+            | None ->
                 // Bind があるので、変数に退避する
                 let f (accTree, argExprs) (tree, ty) =
                     let tv = tmpVar ("combArg", ty)
                     let letTree = tree |> continueWith (Tree.Let (tv, Tree.Zero))
                     let accTree = accTree |> continueWith letTree
-                    accTree, FsExpr.Var(tv)::argExprs
+                    accTree, FsExpr.Var(tv) :: argExprs
                 let preludeTree, newArgs = trees |> List.fold f (Tree.Zero, [])
                 let expr = ExprShape.RebuildShapeCombination(shape, List.rev newArgs)
                 preludeTree |> continueWith (Tree.Expr (expr, Tree.Zero))
-            else
-                // toTree では式の変形を行わないので、入力された式をそのまま使う
-                Tree.Expr (expr, Tree.Zero)
 
         | expr -> Tree.Expr (expr, Tree.Zero)
 
