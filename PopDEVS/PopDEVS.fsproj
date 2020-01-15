@@ -23,6 +23,7 @@
     <Compile Include="ProcessOriented\ControlFlowGraph.fs" />
     <Compile Include="ProcessOriented\MutableCfg.fs" />
     <Compile Include="ProcessOriented\ProcessModelBuilderResult.fs" />
+    <Compile Include="ProcessOriented\LetRecUtils.fs" />
     <Compile Include="ProcessOriented\ProcessGraphBuilder.fs" />
     <Compile Include="ProcessOriented\CompiledState.fs" />
     <Compile Include="ProcessOriented\ProcessModel.fs" />

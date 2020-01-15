@@ -3,7 +3,10 @@ module internal PopDEVS.ProcessOriented.ProcessGraphBuilder
 open System
 open System.Collections.Generic
 open FSharp.Quotations
+open FSharpx.Collections
+open LetRecUtils
 open MutableCfg
+open PopDEVS
 
 type private CfgEnv =
     { /// 外部からキャプチャした変数
@@ -15,9 +18,8 @@ type private CfgEnv =
 type private Tree =
     | Expr of FsExpr * cont: Tree
     | Let of FsVar * cont: Tree
-    | LetRec of (FsVar * FsExpr) list * cont: Tree
     | If of t: Tree * f: Tree * cont: Tree
-    | While of cond: Tree * body: Tree * cont: Tree
+    | While of cond: Tree option * body: Tree * cont: Tree
     | Bind of cont: Tree
     | Zero
 
@@ -75,21 +77,6 @@ module private BuilderPatterns =
             | _ -> failwith "The argument of the Delay call is not a lambda."
         | _ -> None
 
-let rec private continueWith cont tree =
-    let rec f = function
-        | Tree.Expr (x, Tree.Zero) ->
-            match cont with
-            | Tree.Expr (y, z) -> Tree.Expr (FsExpr.Sequential(x, y), z)
-            | _ -> Tree.Expr (x, cont)
-        | Tree.Expr (x, y) -> Tree.Expr (x, f y)
-        | Tree.Let (x, y) -> Tree.Let (x, f y)
-        | Tree.LetRec (x, y) -> Tree.LetRec (x, f y)
-        | Tree.If (x, y, z) -> Tree.If (x, y, f z)
-        | Tree.While (x, y, z) -> Tree.While (x, y, f z)
-        | Tree.Bind x -> Tree.Bind (f x)
-        | Tree.Zero -> cont
-    f tree
-
 /// `Tree.Bind` が含まれない `Tree` ならば、 `FsExpr` を作成する
 let rec private rebuildExpr tree =
     let rec rebuild tree stack =
@@ -100,16 +87,6 @@ let rec private rebuildExpr tree =
             match rebuild cont [] with
             | Some body -> Some (FsExpr.Let(var, expr, body))
             | None -> None
-        | Tree.LetRec (bindings, cont) ->
-            let expr = stackToExpr stack
-            match rebuild cont [] with
-            | Some body ->
-                Some (
-                    let letRecExpr = FsExpr.LetRecursive(bindings, body)
-                    match expr with
-                    | DerivedPatterns.Unit -> letRecExpr
-                    | _ -> FsExpr.Sequential(expr, letRecExpr))
-            | None -> None
         | Tree.If (t, f, cont) ->
             match rebuildExpr t, rebuildExpr f with
             | Some t, Some f ->
@@ -117,7 +94,11 @@ let rec private rebuildExpr tree =
                 rebuild cont [FsExpr.IfThenElse(condExpr, t, f)]
             | _ -> None
         | Tree.While (cond, body, cont) ->
-            match rebuildExpr cond, rebuildExpr body with
+            let condExpr =
+                match cond with
+                | Some x -> rebuildExpr x
+                | None -> Some (FsExpr.Value(true))
+            match condExpr, rebuildExpr body with
             | Some cond, Some body -> rebuild cont [FsExpr.WhileLoop(cond, body)]
             | _ -> None
         | Tree.Bind _ -> None
@@ -141,6 +122,34 @@ let toTree (input: ProcessModelBuilderResult<'I>) =
         tmpVarCount <- tmpVarCount + 1
         FsVar(sprintf "%s%d" name tmpVarCount, ty)
 
+    let rec continueWith cont tree =
+        let rec f = function
+            | Tree.Expr (x, Tree.Zero) ->
+                match cont with
+                | Tree.Expr (y, z) -> Tree.Expr (FsExpr.Sequential(x, y), z)
+                | _ -> Tree.Expr (x, cont)
+            | Tree.Expr (x, y) -> Tree.Expr (x, f y)
+            | Tree.Let (x, y) -> Tree.Let (x, f y)
+            | Tree.If (x, y, Tree.Zero) ->
+                // if の結果を次のノードで使うなら、 let する
+                let varOpt =
+                    match cont with
+                    | Tree.If _ -> Some (tmpVar ("if", typeof<bool>))
+                    | Tree.Bind _ -> Some (tmpVar ("if", typeof<WaitCondition>))
+                    | _ -> None
+                match varOpt with
+                | Some var ->
+                    Tree.If (x, y,
+                        Tree.Let (var,
+                            Tree.Expr (FsExpr.Var(var),
+                                cont)))
+                | None -> Tree.If (x, y, cont)
+            | Tree.If (x, y, z) -> Tree.If (x, y, f z)
+            | Tree.While (x, y, z) -> Tree.While (x, y, f z)
+            | Tree.Bind x -> Tree.Bind (f x)
+            | Tree.Zero -> cont
+        f tree
+
     let rec toTreeCore = function
         | Patterns.Let (var, expr, body) ->
             toTreeCore expr
@@ -148,11 +157,56 @@ let toTree (input: ProcessModelBuilderResult<'I>) =
             |> reduceTree
 
         | Patterns.LetRecursive (bindings, body) ->
-            if bindings |> List.exists (snd >> toTreeCore >> isSimpleExpr) then
-                failwith "Too complex let rec"
+            let bindings = bindingsWithKind bindings
 
-            Tree.LetRec (bindings, toTreeCore body)
-            |> reduceTree
+            let makeMutable (v: FsVar, e: FsExpr) (b: FsExpr) =
+                if v.IsMutable then v, e, b
+                else
+                    let mutVar = FsVar(v.Name, v.Type, true)
+                    let mutVarExpr = FsExpr.Var(mutVar)
+                    let rec replaceVar = function
+                        | ExprShape.ShapeVar x as e ->
+                            if x = v then mutVarExpr else e
+                        | ExprShape.ShapeLambda (x, e) ->
+                            FsExpr.Lambda(x, replaceVar e)
+                        | ExprShape.ShapeCombination (shape, args) ->
+                            ExprShape.RebuildShapeCombination(shape, args |> List.map replaceVar)
+                    mutVar, replaceVar e, replaceVar b
+
+            let tree, body =
+                let f ((t, b) as s) ((v, e) as ve, k) =
+                    match k with
+                    | NotRecursive ->
+                        let letTree = toTreeCore e |> continueWith (Tree.Let (v, Tree.Zero))
+                        t |> continueWith letTree, b
+                    | Recursive ->
+                        let v, e, b = makeMutable ve b
+                        let initializeTree =
+                            Tree.Expr (FsExpr.DefaultValue(v.Type),
+                                Tree.Let (v, Tree.Zero))
+                        let exprTree = toTreeCore (FsExpr.VarSet(v, e))
+                        t |> continueWith (initializeTree |> continueWith exprTree), b
+                    | _ -> s
+                bindings |> List.fold f (Tree.Zero, body)
+
+            let tree, body, ves =
+                let f ((t, b, ves) as s) (ve, k) =
+                    match k with
+                    | MutuallyRecursive ->
+                        let v, e, b = makeMutable ve b
+                        let initializeTree =
+                            Tree.Expr (FsExpr.DefaultValue(v.Type),
+                                Tree.Let (v, Tree.Zero))
+                        t |> continueWith initializeTree, b, (v, e) :: ves
+                    | _ -> s
+                bindings |> List.fold f (tree, body, [])
+
+            let tree =
+                let f (v, e) t =
+                    t |> continueWith (toTreeCore (FsExpr.VarSet(v, e)))
+                List.foldBack f ves tree
+
+            tree |> continueWith (toTreeCore body) |> reduceTree
 
         | Patterns.IfThenElse (guard, thenExpr, elseExpr) ->
             let guardTree = toTreeCore guard
@@ -163,7 +217,15 @@ let toTree (input: ProcessModelBuilderResult<'I>) =
             |> reduceTree
 
         | BuilderPatterns.CallWhile builder (guard, body) ->
-            let guardTree = toTreeCore guard
+            let guardTree =
+                match guard with
+                | Patterns.ValueWithName _ ->
+                    // ValueWithName は定数なので DerivedPatterns.Bool にマッチするが
+                    // 定数ではなく変数として扱いたいので、先に引っ掛ける。
+                    Some (toTreeCore guard)
+                | DerivedPatterns.Bool true ->
+                    None
+                | _ -> Some (toTreeCore guard)                
             let bodyTree = toTreeCore body
             Tree.While (guardTree, bodyTree, Tree.Zero)
             |> reduceTree
@@ -194,7 +256,6 @@ let toTree (input: ProcessModelBuilderResult<'I>) =
                 | Tree.Expr (x, Tree.Zero) -> Tree.Expr (FsExpr.VarSet(var, x), Tree.Zero)
                 | Tree.Expr (x, y) -> Tree.Expr (x, contVarSet y)
                 | Tree.Let (x, y) -> Tree.Let (x, contVarSet y)
-                | Tree.LetRec (x, y) -> Tree.LetRec (x, contVarSet y)
                 | Tree.If (x, y, Tree.Zero) -> Tree.If (x, y, setWithLet())
                 | Tree.If (x, y, z) -> Tree.If (x, y, contVarSet z)
                 | Tree.While (x, y, z) -> Tree.While (x, y, contVarSet z)
@@ -294,27 +355,105 @@ let build (input: ProcessModelBuilderResult<'I>) =
             // 直後でしか使われないなら、ただの let 式にできる
             let isUsed =
                 let rec f = function
-                    | Tree.Expr (_, x) | Tree.Let (_, x) | Tree.LetRec (_, x) -> f x
+                    | Tree.Expr (_, x) | Tree.Let (_, x) -> f x
+                    // TODO: if もうまくやれるかと思ったけど、 createNode を作りこめなかった
+                    (*
+                    | Tree.If (thenTree, elseTree, cont) ->
+                        f thenTree || f elseTree || usedInTree cont *)
                     | Tree.Zero -> false
-                    | x -> usedInTree x
+                    | x -> usedInTree var x
                 f cont
             if isUsed then
                 let r = { FsVar = var
                           CapturedValue = None }
                 env.Variables.Add(var, r)
 
-    let rec createNode = function
+    let createOneWayNode lambdaParameter expr =
+        FsExpr.Sequential(expr, oneWay)
+        |> excast
+        |> newNode lambdaParameter
+
+    let rec createNode p =
+        let rec createNodeCore = function
         | Tree.Expr (x, Tree.Expr (y, z)) ->
-            createNode (Tree.Expr (FsExpr.Sequential(x, y), z))
+            createNodeCore (Tree.Expr (FsExpr.Sequential(x, y), z))
 
         | Tree.Expr (x, Tree.Let (var, cont)) ->
             if env.Variables.ContainsKey(var) then
-                createNode (Tree.Expr (FsExpr.VarSet(var, x), cont))
+                createNodeCore (Tree.Expr (FsExpr.VarSet(var, x), cont))
             else
+                // let 式に変換できると判定された場合、 Variables に登録されない
                 match cont with
-                | Expr.Tree (contExpr, contCont) ->
-                    createNode (Tree.Expr (FsExpr.Let(var, x, contExpr), contCont))
+                | Tree.Expr (contExpr, contCont) ->
+                    createNodeCore (Tree.Expr (FsExpr.Let(var, x, contExpr), contCont))
                 | _ ->
-                    createNode (Tree.Expr (x, cont))
+                    createNodeCore (Tree.Expr (x, cont))
 
-        // TODO
+        | Tree.Expr (x, Tree.If (thenTree, elseTree, cont)) ->
+            let edgeExpr =
+                FsExpr.IfThenElse(x, FsExpr.Value(1), FsExpr.Value(0))
+                |> FsExpr.Cast<int>
+            let ifNode =
+                <@ %edgeExpr, Option<WaitCondition>.None @>
+                |> newNode p
+            let contLeft, contRight =
+                createNode None cont
+                |> Option.defaultWith (fun () -> let n = newNode None oneWay in n, n)
+
+            let createBranch tree =
+                match createNode None tree with
+                | Some (a, b) ->
+                    connectMutNode ifNode a
+                    connectMutNode b contLeft
+                | None ->
+                    connectMutNode ifNode contLeft
+
+            createBranch elseTree // 0
+            createBranch thenTree // 1
+
+            Some (ifNode, contRight)
+
+        | Tree.Expr (x, Tree.Bind cont) ->
+            let node =
+                <@ 0, Some %(FsExpr.Cast<WaitCondition>(x)) @>
+                |> newNode p
+
+            match createNode None cont with
+            | Some (a, b) ->
+                connectMutNode node a
+                Some (node, b)
+            | None -> Some (node, node)
+
+        | Tree.Expr (x, cont) ->
+            let node = createOneWayNode p x
+            match createNode None cont with
+            | Some (a, b) ->
+                connectMutNode node a
+                Some (node, b)
+            | None -> Some (node, node)
+
+        | Tree.Let (var, cont) ->
+            createNode (Some var) cont
+
+        | Tree.While (None, body, _) ->
+            match createNode p body with
+            | Some (a, b) ->
+                connectMutNode b a
+                Some (a, b)
+            | None ->
+                let n = newNode None <@ -1, Option<WaitCondition>.None @>
+                Some (n, n)
+
+        | Tree.While (Some cond, body, cont) ->
+            let condLeft, condRight = createNode p cond |> Option.get
+            let contLeft, contRight =
+                createNode None cont
+                |> Option.defaultWith (fun () -> let n = newNode None oneWay in n, n)
+
+            // TODO: cond の bool 値を取り出す
+
+        | Tree.Zero -> None
+
+        createNodeCore
+
+    toTree input |> createNode None

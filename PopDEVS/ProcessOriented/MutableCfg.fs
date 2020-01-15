@@ -16,9 +16,7 @@ type ImmutableGraph = ControlFlowGraph.Graph
 type MutableVar =
     { FsVar: FsVar
       /// 外部からキャプチャした変数なら、その値を代入
-      CapturedValue: obj option
-      /// ラムダ式にキャプチャされる変数か
-      mutable IsEscaped: bool }
+      CapturedValue: obj option }
 
 [<ReferenceEquality>]
 type MutableNode =    
@@ -27,8 +25,14 @@ type MutableNode =
       /// 処理を行い、次に遷移する辺のインデックスを返す式
       Expr: FsExpr<int * WaitCondition option>
       IncomingEdges: HashSet<MutableNode>
-      /// 出力辺（行き先 * 待機条件を返すか）
-      OutgoingEdges: List<MutableNode * bool> }
+      /// 出力辺
+      OutgoingEdges: List<MutableNode> }
+
+let newNode p e =
+    { LambdaParameter = p
+      Expr = e
+      IncomingEdges = HashSet()
+      OutgoingEdges = List() }
 
 /// `FSharp.Quotations.Expr` を `FSharp.Quotations.Expr<int * WaitCondition option>` に変換する
 let excast (source: FsExpr) =
@@ -52,6 +56,11 @@ let rec splitLastExpr = function
         | Some proc, last -> Some (FsExpr.Sequential (left, proc)), last
         | None, last -> Some left, last
     | x -> None, x
+
+let noWaitCond (idx: int) =
+    <@ %(FsExpr.Cast<int>(FsExpr.Value(idx))), Option<WaitCondition>.None @>
+
+let oneWay = noWaitCond 0
 
 let (|OneWayBody|_|) expr =
     let (|OneWayExpr|_|) = function
@@ -81,9 +90,9 @@ let (|ReturnsWaitCondition|_|) expr =
     | _ ->
         invalidArg (nameof expr) "The last expression is not NewTuple."
 
-let connectMutNode left right returnsWaitCondition =
-    left.OutgoingEdges.Add((right, returnsWaitCondition))
-    right.IncomingEdges.Add(left)
+let connectMutNode left right =
+    left.OutgoingEdges.Add(right)
+    right.IncomingEdges.Add(left) |> ignore
 
 let enumerateNodes rootNode =
     let nodeList = List()
@@ -92,7 +101,7 @@ let enumerateNodes rootNode =
     let rec traverse node =
         if nodeSet.Add(node) then
             nodeList.Add(node)
-            node.OutgoingEdges |> Seq.iter (fst >> traverse)
+            node.OutgoingEdges |> Seq.iter traverse
 
     traverse rootNode
     nodeList :> IReadOnlyList<MutableNode>
@@ -114,7 +123,7 @@ let createImmutableGraph (vars, rootNode) : ImmutableGraph =
 
             edgesBuilder.Capacity <- mutNode.OutgoingEdges.Count
             mutNode.OutgoingEdges
-                |> Seq.map (fun (x, _) -> nodeDic.[x])
+                |> Seq.map (fun x -> nodeDic.[x])
                 |> edgesBuilder.AddRange
 
             let imNode: ImmutableNode =
