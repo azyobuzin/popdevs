@@ -29,16 +29,6 @@ let private isSimpleExpr = function
     | SimpleExpr _ -> true
     | _ -> false
 
-type private VarUsage =
-    | NotUsedFar
-    | UsedFar
-    | Escaped
-
-let maxUsage = function
-    | Escaped, _ | _, Escaped -> Escaped
-    | UsedFar, _ | _, UsedFar -> UsedFar
-    | _ -> NotUsedFar
-
 let private unitExpr = <@@ () @@>
 
 let private varIsUsed var =
@@ -230,7 +220,7 @@ let toTree (input: ProcessModelBuilderResult<'I>) =
             | Some exprs ->
                 Tree.Expr (ExprShape.RebuildShapeCombination(shape, exprs), Tree.Zero)
             | None ->
-                // Bind があるので、変数に退避する
+                // 簡単に変換できそうにないので、値を変数に退避する
                 let f (accTree, argExprs) (tree, ty) =
                     let tv = tmpVar ("combArg", ty)
                     let letTree = tree |> continueWith (Tree.Let (tv, Tree.Zero))
@@ -272,31 +262,26 @@ let build (input: ProcessModelBuilderResult<'I>) =
             // 新規追加
             let fsVar = FsVar(name, varType)
             let newVar = { FsVar = fsVar
-                            CapturedValue = Some value
-                            IsEscaped = false }
+                           CapturedValue = Some value }
             env.CapturedVariables.Add(name, newVar)
             env.Variables.Add(fsVar, newVar)
             newVar
 
     let rec findVars tree =
-        let rec usageInExpr var =
+        let rec usedInExpr var =
             let rec f = function
-                | ExprShape.ShapeVar x ->
-                    if x = var then UsedFar else NotUsedFar
-                | ExprShape.ShapeLambda (_, x) ->
-                    match f x with
-                    | NotUsedFar -> NotUsedFar
-                    | _ -> Escaped
+                | ExprShape.ShapeVar x -> x = var
+                | ExprShape.ShapeLambda (_, x) -> f x
                 | ExprShape.ShapeCombination (_, exprs) ->
-                    exprs |> List.fold (fun acc x -> maxUsage (acc, (f x)))
+                    exprs |> List.exists f
             f
-        and usageInTree var =
+        and usedInTree var =
             let rec f = function
-                | Tree.Expr (expr, cont) -> maxUsage (usageInExpr var expr, f cont)
+                | Tree.Expr (expr, cont) -> usedInExpr var expr || f cont
                 | Tree.Let (_, cont) | Tree.Bind cont -> f cont
                 | Tree.If (x, y, cont) | Tree.While (x, y, cont) ->
-                    maxUsage (maxUsage (f x, f y), f cont)
-                | Tree.Zero -> NotUsedFar
+                    f x || f y || f cont
+                | Tree.Zero -> false
             f
 
         match tree with
@@ -306,24 +291,17 @@ let build (input: ProcessModelBuilderResult<'I>) =
             findVars x; findVars y; findVars z
         | Tree.Zero -> ()
         | Tree.Let (var, cont) ->
-            let usage =
-                match cont with
-                | Tree.Expr (expr, exprCont) ->
-                    // 直後の Expr でしか使われないなら、ただの let 式にできる
-                    match usageInExpr var expr with
-                    | Escaped -> Escaped
-                    | _ -> usageInTree exprCont
-                | _ -> usageInTree cont
-            let x =
-                match usage with
-                | NotUsedFar -> None
-                | UsedFar -> Some false
-                | Escaped -> Some true
-            x |> Option.iter (fun escaped ->
+            // 直後でしか使われないなら、ただの let 式にできる
+            let isUsed =
+                let rec f = function
+                    | Tree.Expr (_, x) | Tree.Let (_, x) | Tree.LetRec (_, x) -> f x
+                    | Tree.Zero -> false
+                    | x -> usedInTree x
+                f cont
+            if isUsed then
                 let r = { FsVar = var
-                          CapturedValue = None
-                          IsEscaped = escaped }
-                env.Variables.Add(var, r))
+                          CapturedValue = None }
+                env.Variables.Add(var, r)
 
     let rec createNode = function
         | Tree.Expr (x, Tree.Expr (y, z)) ->
