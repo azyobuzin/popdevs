@@ -30,11 +30,11 @@ module Tree =
     let rec rebuildExpr tree =
         let rec rebuild tree stack =
             match tree with
-            | Tree.Expr (expr, cont) -> rebuild cont (expr::stack)
+            | Tree.Expr (expr, cont) -> rebuild cont (expr :: stack)
             | Tree.Let (var, cont) ->
                 let expr = stackToExpr stack
                 match rebuild cont [] with
-                | Some body -> Some (FsExpr.Let(var, expr, body))
+                | Some body -> Some (continueWithLet var expr body)
                 | None -> None
             | Tree.If (t, f, cont) ->
                 match rebuildExpr t, rebuildExpr f with
@@ -55,7 +55,7 @@ module Tree =
         and stackToExpr = function
             | [] -> unitExpr
             | [expr] -> expr
-            | expr :: stack -> FsExpr.Sequential(stackToExpr stack, expr)
+            | expr :: stack -> mkSeqExpr (stackToExpr stack) expr
         rebuild tree []
         
     let reduce tree =
@@ -289,6 +289,7 @@ let toTree (input: ProcessModelBuilderResult<'I>) =
                 Tree.Expr (ExprShape.RebuildShapeCombination(shape, exprs), Tree.Zero)
             | None ->
                 // 簡単に変換できそうにないので、値を変数に退避する
+                // TODO: やりすぎ感があるので修正する
                 let f (accTree, argExprs) (tree, ty) =
                     let tv = tmpVar ("combArg", ty)
                     let letTree = tree |> continueWith (Tree.Let (tv, Tree.Zero))

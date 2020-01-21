@@ -102,3 +102,27 @@ let createImmutableGraph (vars, rootNode) : ImmutableGraph =
 
     { Variables = ImmutableArray.CreateRange(vars)
       Nodes = nodes }
+
+let continueWithLet var expr body =
+    let rec f = function
+        | Patterns.Sequential (x, y) ->
+            FsExpr.Sequential(x, f y)
+        | Patterns.Let (x, y, z) ->
+            FsExpr.Let(x, y, f z)
+        | Patterns.LetRecursive (x, y) ->
+            FsExpr.LetRecursive(x, f y)
+        | x ->
+            FsExpr.Let(var, x, body)
+    f expr
+
+let mkSeqExpr first second =
+    let rec f = function
+        | Patterns.Sequential (x, y) ->
+            FsExpr.Sequential(x, f y)
+        | Patterns.Let (x, y, z) ->
+            FsExpr.Let(x, y, f z)
+        | Patterns.LetRecursive (x, y) ->
+            FsExpr.LetRecursive(x, f y)
+        | x ->
+            FsExpr.Sequential(x, second)
+    f first

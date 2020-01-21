@@ -5,13 +5,13 @@ open System.Collections.Immutable
 open Expecto
 open FSharp.Quotations
 open PopDEVS.ProcessOriented
-open MutableCfg
+open PgUtils
 
-let private createImmutableNode (index, hasMultipleIncomingEdges, edges) (expr: FsExpr<obj -> int * WaitCondition option>) : ImmutableNode =
+let private createImmutableNode index edges (expr: FsExpr<obj -> int * WaitCondition option>) : ImmutableNode =
     match expr with
     | Patterns.Lambda (lambdaVar, lambdaBody) ->
         { Index = index
-          LambdaParameter = lambdaVar
+          LambdaParameter = Some lambdaVar
           Expr = lambdaBody |> excast
           Edges = ImmutableArray.CreateRange(edges) }
     | _ -> invalidArg (nameof expr) "expr is not a lambda expression."
@@ -27,15 +27,18 @@ let private expectNodeEqual (actual: ImmutableNode) (expected: ImmutableNode) in
 
     // ラムダパラメータを書き換えて、 Equals が成立するようにする
     let actualExpr =
-        let substitution var =
-            if var = actual.LambdaParameter then
-                Some (FsExpr.Var(expected.LambdaParameter))
-            else
-                None
-        actual.Expr.Substitute(substitution)
+        match expected.LambdaParameter, actual.LambdaParameter with
+        | Some expectedP, Some actualP ->
+            let substitution var =
+                if var = actualP then
+                    Some (FsExpr.Var(expectedP))
+                else
+                    None
+            actual.Expr.Substitute(substitution) |> excast
+        | _ -> actual.Expr
 
     Expect.equal
-        actualExpr expected.Expr.Raw
+        actualExpr expected.Expr
         (msg (nameof expected.Expr))
 
     Expect.sequenceEqual
@@ -44,8 +47,8 @@ let private expectNodeEqual (actual: ImmutableNode) (expected: ImmutableNode) in
 
 [<Tests>]
 let tests =
-    testList "ProcessModelBuilder" [
-        test "convert computation expression with loop and bind to CFG" {
+    testList "ProcessGraphBuilder" [
+        test "convert computation expression with loop and bind to process graph" {
             let returnInputWaitCondition = Unchecked.defaultof<WaitCondition<int, int>>
             let unitWaitCondition = Unchecked.defaultof<WaitCondition<int, unit>>
 
@@ -59,7 +62,7 @@ let tests =
                         i <- i + 1
                 }
 
-            let graph = builderResult.ControlFlowGraph
+            let graph = ProcessGraphBuilder.build builderResult
             let actualNodes = graph.Nodes
 
             let getVar name =
@@ -69,6 +72,7 @@ let tests =
 
             let iVar = getVar "i"
             let iExpr = FsExpr.Cast<int>(FsExpr.Var(iVar))
+            // TODO: v は let に変換できるため、 Variables に含まれない
             let vVar = getVar "v"
             let vExpr = FsExpr.Cast<int>(FsExpr.Var(vVar))
             let returnInputWaitConditionExpr = FsExpr.Cast<WaitCondition<int, int>>(FsExpr.Var(getVar (nameof returnInputWaitCondition)))
@@ -76,19 +80,19 @@ let tests =
 
             let expectedNodes =
                 [
-                    createImmutableNode (0, false, [1])
+                    createImmutableNode 0 [1]
                         <@ fun _ -> %%(FsExpr.VarSet(iVar, <@@ 1 @@>)); 0, Option<WaitCondition>.None @>
 
-                    createImmutableNode (1, true, [2; 3])
+                    createImmutableNode 1 [2; 3]
                         <@ fun _ -> (if %iExpr <= 9 then 1 else 0), Option<WaitCondition>.None @>
 
-                    createImmutableNode (2, false, [])
+                    createImmutableNode 2 []
                         <@ fun _ -> 0, Option<WaitCondition>.None @>
 
-                    createImmutableNode (3, false, [4])
+                    createImmutableNode 3 [4]
                         <@ fun _ -> 0, Some (%returnInputWaitConditionExpr :> WaitCondition) @>
 
-                    createImmutableNode (4, false, [5; 6])
+                    createImmutableNode 4 [5; 6]
                         (let waitResultVar = FsVar("waitResult", typeof<obj>)
                          FsExpr.Cast<obj -> int * WaitCondition option>(
                             FsExpr.Lambda(waitResultVar,
@@ -96,12 +100,12 @@ let tests =
                                     FsExpr.VarSet(vVar, FsExpr.Var(waitResultVar) |> unboxExpr typeof<int>),
                                     <@@ (if %vExpr % 2 = 0 then 1 else 0), Option<WaitCondition>.None @@>))))
 
-                    createImmutableNode (5, true, [1])
+                    createImmutableNode 5 [1]
                         <@ fun _ ->
                             %%(FsExpr.VarSet(iVar, <@@ %iExpr + 1 @@>))
                             0, Option<WaitCondition>.None @>
 
-                    createImmutableNode (6, false, [5])
+                    createImmutableNode 6 [5]
                         <@ fun _ -> 0, Some (%unitWaitConditionExpr :> WaitCondition) @>
                 ]
 

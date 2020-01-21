@@ -25,9 +25,9 @@ module private Terminal =
 
 open Terminal
 
-let private oneNode node = node, Some node
+let private oneNode (node: MutableNode) = node, Some node
 
-let build (input: ProcessModelBuilderResult<'I>) =
+let treeToGraph tree =
     let env =
         {| /// 外部からキャプチャした変数
            CapturedVariables = Dictionary<string, ImmutableVar>()
@@ -84,7 +84,7 @@ let build (input: ProcessModelBuilderResult<'I>) =
             // if 式の結果を使うので、代入が必要になるから使用済み判定をする
             env.Variables.Add(var, { FsVar = var; CapturedValue = None })
             findVars x; findVars y; findVars z
-        | Tree.If (x, y, z)  | Tree.While (Some x, y, z) ->
+        | Tree.If (x, y, z) | Tree.While (Some x, y, z) ->
             findVars x; findVars y; findVars z
         | Tree.While (None, x, _) ->
             findVars x
@@ -109,9 +109,9 @@ let build (input: ProcessModelBuilderResult<'I>) =
         | ExprShape.ShapeCombination (shape, args) ->
             ExprShape.RebuildShapeCombination(shape, List.map findCaptured args)
 
-    let newNode p e =
+    let newNode p (e: FsExpr<int * WaitCondition option>) =
         { LambdaParameter = p
-          Expr = e
+          Expr = findCaptured e |> excast
           IncomingEdges = HashSet()
           OutgoingEdges = List() }
 
@@ -124,7 +124,7 @@ let build (input: ProcessModelBuilderResult<'I>) =
         let rec withParam p =
             let rec withTree = function
             | Tree.Expr (x, Tree.Expr (y, z)) ->
-                withTree (Tree.Expr (FsExpr.Sequential(x, y), z))
+                withTree (Tree.Expr (mkSeqExpr x y, z))
 
             | Tree.Expr (x, Tree.Let (var, cont)) ->
                 if env.Variables.ContainsKey(var) then
@@ -133,7 +133,7 @@ let build (input: ProcessModelBuilderResult<'I>) =
                     // let 式に変換できると判定された場合、 Variables に登録されない
                     match cont with
                     | Tree.Expr (contExpr, contCont) ->
-                        withTree (Tree.Expr (FsExpr.Let(var, x, contExpr), contCont))
+                        withTree (Tree.Expr (continueWithLet var x contExpr, contCont))
                     | _ ->
                         withTree (Tree.Expr (x, cont))
 
@@ -179,7 +179,9 @@ let build (input: ProcessModelBuilderResult<'I>) =
 
             | Tree.Expr (x, Tree.Bind cont) ->
                 let node =
-                    <@ 0, Some %(FsExpr.Cast<WaitCondition>(x)) @>
+                    let convX = FsExpr.Coerce(x, typeof<WaitCondition>)
+                                |> FsExpr.Cast<WaitCondition>
+                    <@ 0, Some %convX @>
                     |> newNode p
 
                 match cont with
@@ -187,7 +189,10 @@ let build (input: ProcessModelBuilderResult<'I>) =
                 | _ ->
                     let p, cont =
                         match cont with
-                        | Tree.Let (var, letCont) -> Some var, letCont
+                        | Tree.Let (var, _) ->
+                            let lp = FsVar("waitResult", typeof<obj>)
+                            let convExpr = FsExpr.Var(lp) |> unboxExpr var.Type
+                            Some lp, Tree.Expr (convExpr, cont)
                         | _ -> None, cont
                     let a, b = withParam p cont
                     connectMutNode node a
@@ -257,5 +262,9 @@ let build (input: ProcessModelBuilderResult<'I>) =
             withTree
         withParam
 
-    let rootNode, _ = toTree input |> createNode defaultTerminal None
+    findVars tree
+    let rootNode, _ = createNode defaultTerminal None tree
     createImmutableGraph (env.Variables.Values, rootNode)
+
+let build (input: ProcessModelBuilderResult<'I>) =
+    toTree input |> treeToGraph
