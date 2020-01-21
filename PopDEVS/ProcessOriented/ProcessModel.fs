@@ -5,7 +5,7 @@ open FSharp.Quotations
 open FSharp.Quotations.Evaluator
 open FSharp.Quotations.ExprShape
 open FSharpx.Collections
-open MutableCfg
+open PgUtils
 open PopDEVS
     
 [<AutoOpen>]
@@ -181,18 +181,16 @@ module ProcessModel =
     let createAtomicModel<'I, 'O> (processModel: ProcessModel<'I, 'O>) =
         let processEnv = ProcessEnv<'I, 'O>()
 
-        let cfg =
-            let builderResult = processModel processEnv
-            StateReducer.reduceGraph builderResult.ControlFlowGraph
+        let graph = processModel processEnv |> ProcessGraphBuilder.build
 
         let varsArray =
-            cfg.Variables
+            graph.Variables
             |> Seq.map (fun var -> Option.defaultValue Unchecked.defaultof<obj> var.CapturedValue)
             |> Seq.toArray
 
         let compile =
             let varConvTable =
-                cfg.Variables
+                graph.Variables
                 |> Seq.indexed
                 |> Seq.map (fun (i, v) -> v.FsVar, i)
                 |> Map.ofSeq
@@ -201,6 +199,6 @@ module ProcessModel =
                 { Transition = compileNode n <| varsArray
                   Edges = n.Edges })
 
-        let states = ImmutableArray.CreateRange(cfg.Nodes, compile)
+        let states = ImmutableArray.CreateRange(graph.Nodes, compile)
 
         createAtomicModelFromCompiledStates processEnv states

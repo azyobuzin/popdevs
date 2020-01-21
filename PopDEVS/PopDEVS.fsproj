@@ -20,10 +20,11 @@
     <Compile Include="Sequential\SequentialRunner.fs" />
     <Compile Include="ProcessOriented\WaitCondition.fs" />
     <Compile Include="ProcessOriented\ProcessEnv.fs" />
-    <Compile Include="ProcessOriented\ControlFlowGraph.fs" />
-    <Compile Include="ProcessOriented\MutableCfg.fs" />
+    <Compile Include="ProcessOriented\ProcessGraph.fs" />
+    <Compile Include="ProcessOriented\PgUtils.fs" />
     <Compile Include="ProcessOriented\ProcessModelBuilderResult.fs" />
     <Compile Include="ProcessOriented\LetRecUtils.fs" />
+    <Compile Include="ProcessOriented\IntermediateTree.fs" />
     <Compile Include="ProcessOriented\ProcessGraphBuilder.fs" />
     <Compile Include="ProcessOriented\CompiledState.fs" />
     <Compile Include="ProcessOriented\ProcessModel.fs" />

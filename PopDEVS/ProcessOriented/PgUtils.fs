@@ -1,4 +1,4 @@
-module internal PopDEVS.ProcessOriented.MutableCfg
+module internal PopDEVS.ProcessOriented.PgUtils
 
 open System.Collections.Generic
 open System.Collections.Immutable
@@ -8,15 +8,9 @@ type FsExpr = FSharp.Quotations.Expr
 type FsExpr<'T> = FSharp.Quotations.Expr<'T>
 type FsVar = FSharp.Quotations.Var
 
-type ImmutableVar = ControlFlowGraph.Variable
-type ImmutableNode = ControlFlowGraph.Node
-type ImmutableGraph = ControlFlowGraph.Graph
-
-[<ReferenceEquality>]
-type MutableVar =
-    { FsVar: FsVar
-      /// 外部からキャプチャした変数なら、その値を代入
-      CapturedValue: obj option }
+type ImmutableVar = ProcessGraph.Variable
+type ImmutableNode = ProcessGraph.Node
+type ImmutableGraph = ProcessGraph.Graph
 
 [<ReferenceEquality>]
 type MutableNode =    
@@ -33,6 +27,8 @@ let excast (source: FsExpr) =
     match source with
     | :? FsExpr<int * WaitCondition option> as x -> x
     | x -> FsExpr.Cast<int * WaitCondition option>(x)
+
+let unitExpr = <@@ () @@>
 
 let private unboxMethod =
     match <@@ unbox null @@> with
@@ -106,6 +102,3 @@ let createImmutableGraph (vars, rootNode) : ImmutableGraph =
 
     { Variables = ImmutableArray.CreateRange(vars)
       Nodes = nodes }
-
-let createMutableNodes (graph: ImmutableGraph) : MutableNode[] =
-    failwith "Do not use createMutableNodes."

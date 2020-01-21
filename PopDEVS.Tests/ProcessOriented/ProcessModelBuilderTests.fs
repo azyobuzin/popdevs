@@ -13,7 +13,6 @@ let private createImmutableNode (index, hasMultipleIncomingEdges, edges) (expr: 
         { Index = index
           LambdaParameter = lambdaVar
           Expr = lambdaBody |> excast
-          HasMultipleIncomingEdges = hasMultipleIncomingEdges
           Edges = ImmutableArray.CreateRange(edges) }
     | _ -> invalidArg (nameof expr) "expr is not a lambda expression."
 
@@ -38,11 +37,6 @@ let private expectNodeEqual (actual: ImmutableNode) (expected: ImmutableNode) in
     Expect.equal
         actualExpr expected.Expr.Raw
         (msg (nameof expected.Expr))
-    
-    Expect.equal
-        actual.HasMultipleIncomingEdges
-        expected.HasMultipleIncomingEdges
-        (msg (nameof expected.HasMultipleIncomingEdges))
 
     Expect.sequenceEqual
         actual.Edges expected.Edges
