@@ -28,12 +28,6 @@ type MutableNode =
       /// 出力辺
       OutgoingEdges: List<MutableNode> }
 
-let newNode p e =
-    { LambdaParameter = p
-      Expr = e
-      IncomingEdges = HashSet()
-      OutgoingEdges = List() }
-
 /// `FSharp.Quotations.Expr` を `FSharp.Quotations.Expr<int * WaitCondition option>` に変換する
 let excast (source: FsExpr) =
     match source with
@@ -57,42 +51,17 @@ let rec splitLastExpr = function
         | None, last -> Some left, last
     | x -> None, x
 
-let noWaitCond (idx: int) =
-    <@ %(FsExpr.Cast<int>(FsExpr.Value(idx))), Option<WaitCondition>.None @>
-
-let oneWay = noWaitCond 0
-
-let (|OneWayBody|_|) expr =
-    let (|OneWayExpr|_|) = function
-        | Patterns.NewTuple [edgeIndexExpr; waitCondOptionExpr]
-            when waitCondOptionExpr = <@@ Option<WaitCondition>.None @@> ->
-            match edgeIndexExpr with
-            | Patterns.ValueWithName _ ->
-                // ValueWithName は定数なので DerivedPatterns.Int32 にマッチするが
-                // 定数ではなく変数として扱いたいので、先に引っ掛ける。
-                None
-            | DerivedPatterns.Int32 0 -> Some()
-            | _ -> None
-        | _ -> None
-
-    let body, last = splitLastExpr expr
-    match last with
-    | OneWayExpr -> Some body
-    | _ -> None
-
-let (|ReturnsWaitCondition|_|) expr =
-    let _, lastExpr = splitLastExpr expr
-    match lastExpr with
-    | Patterns.NewTuple [_; Patterns.NewUnionCase (caseInfo, caseArgs)] ->
-        match caseInfo.Name, caseArgs with
-        | "Some", [_] -> Some () // Some を返す = WaitCondition を返す
-        | _ -> None
-    | _ ->
-        invalidArg (nameof expr) "The last expression is not NewTuple."
+let oneWay = <@ 0, Option<WaitCondition>.None @>
 
 let connectMutNode left right =
     left.OutgoingEdges.Add(right)
     right.IncomingEdges.Add(left) |> ignore
+
+let connectOpt left right =
+    match left, right with
+    | Some l, Some r -> connectMutNode l r
+    | None, Some _ -> invalidArg (nameof left) "left is None although right is Some."
+    | _ -> ()
 
 let enumerateNodes rootNode =
     let nodeList = List()
