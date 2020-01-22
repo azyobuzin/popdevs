@@ -27,7 +27,7 @@ let rec private exprEqual varMap leftExpr rightExpr =
             let rec updateVarMap varMap = function
                 | (lv, _) :: lvs, (rv, _) :: rvs ->
                     updateVarMap (Map.add lv rv varMap) (lvs, rvs)
-                | [], [] -> Some varMap
+                | [], [] -> Some varMap // A number of the elements is same
                 | _ -> None
             updateVarMap varMap (lvs, rvs)
         match varMapOpt with
@@ -41,8 +41,9 @@ let rec private exprEqual varMap leftExpr rightExpr =
         | None -> false
     | Patterns.LetRecursive _, _ | _, Patterns.LetRecursive _ -> false
     | ExprShape.ShapeVar lv, ExprShape.ShapeVar rv ->
-        lv = rv || (match Map.tryFind lv varMap with
-                    | Some x when x = rv -> true | _ -> false)
+        match Map.tryFind lv varMap with
+        | Some x -> x = rv
+        | _ -> lv = rv
     | ExprShape.ShapeLambda (lv, le), ExprShape.ShapeLambda (rv, re) ->
         exprEqual (Map.add lv rv varMap) le re
     | ExprShape.ShapeCombination (ls, les), ExprShape.ShapeCombination(rs, res) ->
@@ -53,9 +54,9 @@ let rec private exprEqual varMap leftExpr rightExpr =
         let rec checkExprs = function
             | le :: les, re :: res ->
                 exprEqual varMap le re && checkExprs (les, res)
-            | [], [] -> true
+            | [], [] -> true // A number of the elements is same
             | _ -> false
-        checkExprs (les, res)
+        obj.Equals(getExprConstInfo ls, getExprConstInfo rs) && checkExprs (les, res)
     | _ -> false
 
 let private expectNodeEqual (actual: ImmutableNode) (expected: ImmutableNode) index =
@@ -118,27 +119,25 @@ let tests =
                     createImmutableNode 0 [1]
                         <@ fun _ -> %%(FsExpr.VarSet(iVar, <@@ 1 @@>)); 0, Option<WaitCondition>.None @>
 
-                    createImmutableNode 1 [2; 3]
-                        <@ fun _ -> (if %iExpr <= 9 then 1 else 0), Option<WaitCondition>.None @>
+                    createImmutableNode 1 [2]
+                        <@ fun _ -> (if %iExpr <= 9 then 0 else 1), Option<WaitCondition>.None @>
 
-                    createImmutableNode 2 []
-                        <@ fun _ -> 0, Option<WaitCondition>.None @>
-
-                    createImmutableNode 3 [4]
+                    createImmutableNode 2 [3]
                         <@ fun _ -> 0, Some (%returnInputWaitConditionExpr :> WaitCondition) @>
 
-                    createImmutableNode 4 [5; 6]
+                    createImmutableNode 3 [4; 5]
                         <@ fun waitResult ->
-                            let v = waitResult |> unbox<int>
-                            (if v % 2 = 0 then 1 else 0), Option<WaitCondition>.None @>
+                            (if (let compilerGeneratedVar = waitResult |> unbox<int>
+                                 let v = compilerGeneratedVar
+                                 v % 2 = 0) then 0 else 1), Option<WaitCondition>.None @>
+                            
+                    createImmutableNode 4 [5]
+                        <@ fun _ -> 0, Some (%unitWaitConditionExpr :> WaitCondition) @>
 
                     createImmutableNode 5 [1]
                         <@ fun _ ->
                             %%(FsExpr.VarSet(iVar, <@@ %iExpr + 1 @@>))
                             0, Option<WaitCondition>.None @>
-
-                    createImmutableNode 6 [5]
-                        <@ fun _ -> 0, Some (%unitWaitConditionExpr :> WaitCondition) @>
                 ]
 
             Expect.hasLength actualNodes expectedNodes.Length "graph has 7 nodes"

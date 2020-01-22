@@ -2,7 +2,6 @@ module internal PopDEVS.ProcessOriented.IntermediateTree
 
 open System
 open FSharp.Quotations
-open LetRecUtils
 open PgUtils
 
 [<RequireQualifiedAccess>]
@@ -281,6 +280,7 @@ let toTree (input: ProcessModelBuilderResult<'I>) =
                 let rec f = function
                     | (Tree.SimpleExpr e, _) :: ts ->
                         f ts |> Option.map (fun es -> e :: es)
+                    | [] -> Some []
                     | _ -> None
                 f trees
 
@@ -289,7 +289,6 @@ let toTree (input: ProcessModelBuilderResult<'I>) =
                 Tree.Expr (ExprShape.RebuildShapeCombination(shape, exprs), Tree.Zero)
             | None ->
                 // 簡単に変換できそうにないので、値を変数に退避する
-                // TODO: やりすぎ感があるので修正する
                 let f (accTree, argExprs) (tree, ty) =
                     let tv = tmpVar ("combArg", ty)
                     let letTree = tree |> continueWith (Tree.Let (tv, Tree.Zero))

@@ -138,14 +138,6 @@ let treeToGraph tree =
                         withTree (Tree.Expr (x, cont))
 
             | Tree.Expr (x, Tree.If (thenTree, elseTree, cont)) ->
-                let ifNode =
-                    let edgeExpr =
-                        // true -> 1, false -> 0
-                        FsExpr.IfThenElse(x, FsExpr.Value(1), FsExpr.Value(0))
-                        |> FsExpr.Cast<int>
-                    <@ %edgeExpr, Option<WaitCondition>.None @>
-                    |> newNode p
-
                 let contLeft, contRight, assignVar =
                     match cont with
                     | Tree.Zero when terminal.CanDiscard -> None, None, None
@@ -158,22 +150,49 @@ let treeToGraph tree =
                         let a, b = withParam None cont
                         Some a, b, None
 
-                let terminate =
-                    match assignVar with
-                    | Some v -> (fun expr ->
-                        (FsExpr.VarSet(v, expr), oneWay)
-                        |> FsExpr.Sequential
-                        |> excast)
-                    | None -> terminateOneWay
+                let brTerminal =
+                    let terminate =
+                        match assignVar with
+                        | Some v -> (fun expr ->
+                            (FsExpr.VarSet(v, expr), oneWay)
+                            |> FsExpr.Sequential
+                            |> excast)
+                        | None -> terminateOneWay
+                    mkTerminal (Option.isNone contLeft, terminate)
 
-                let brTerminal = mkTerminal (Option.isNone contLeft, terminate)
-                let createBranch tree =
+                let mkIfThen tree b =
+                    let ifNode =
+                        let tmap f (x, y) = f x, f y
+                        let thenEdge, elseEdge =
+                            if b then 0, 1 else 1, 0
+                            |> tmap (FsExpr.Value >> FsExpr.Cast<int>)
+                        <@ (if %%x then %thenEdge else %elseEdge), Option<WaitCondition>.None @>
+                        |> newNode p
                     let a, b = createNode brTerminal None tree
-                    connectMutNode ifNode a
+                    connectMutNode ifNode a // 0
+                    Option.iter (connectMutNode ifNode) contLeft // 1
                     connectOpt b contLeft
+                    ifNode
 
-                createBranch elseTree // 0
-                createBranch thenTree // 1
+                let ifNode =
+                    match thenTree, elseTree with
+                    | body, Tree.Zero -> // then only
+                        mkIfThen body true
+                    | Tree.Zero, body -> // else only
+                        mkIfThen body false
+                    | _ ->
+                        let ifNode =
+                            // true -> 0, false -> 1
+                            <@ (if %%x then 0 else 1), Option<WaitCondition>.None @>
+                            |> newNode p
+                        let createBranch tree =
+                            let a, b = createNode brTerminal None tree
+                            connectMutNode ifNode a
+                            connectOpt b contLeft
+
+                        createBranch thenTree // 0
+                        createBranch elseTree // 1
+                        ifNode
 
                 ifNode, contRight
 

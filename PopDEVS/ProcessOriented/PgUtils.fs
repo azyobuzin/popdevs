@@ -22,33 +22,6 @@ type MutableNode =
       /// 出力辺
       OutgoingEdges: List<MutableNode> }
 
-/// `FSharp.Quotations.Expr` を `FSharp.Quotations.Expr<int * WaitCondition option>` に変換する
-let excast (source: FsExpr) =
-    match source with
-    | :? FsExpr<int * WaitCondition option> as x -> x
-    | x -> FsExpr.Cast<int * WaitCondition option>(x)
-
-let unitExpr = <@@ () @@>
-
-let private unboxMethod =
-    match <@@ unbox null @@> with
-    | Patterns.Call (_, methodInfo, _) ->
-        methodInfo.GetGenericMethodDefinition()
-    | _ -> failwith "unreachable"
-/// `obj` を指定した型 `ty` に変換する
-let unboxExpr ty expr =
-    FsExpr.Call(unboxMethod.MakeGenericMethod([| ty |]), [expr])
-
-/// Sequential で連結された最後の式と、それ以外に分離する
-let rec splitLastExpr = function
-    | Patterns.Sequential (left, right) ->
-        match splitLastExpr right with
-        | Some proc, last -> Some (FsExpr.Sequential (left, proc)), last
-        | None, last -> Some left, last
-    | x -> None, x
-
-let oneWay = <@ 0, Option<WaitCondition>.None @>
-
 let connectMutNode left right =
     left.OutgoingEdges.Add(right)
     right.IncomingEdges.Add(left) |> ignore
@@ -103,6 +76,25 @@ let createImmutableGraph (vars, rootNode) : ImmutableGraph =
     { Variables = ImmutableArray.CreateRange(vars)
       Nodes = nodes }
 
+/// `FSharp.Quotations.Expr` を `FSharp.Quotations.Expr<int * WaitCondition option>` に変換する
+let excast (source: FsExpr) =
+    match source with
+    | :? FsExpr<int * WaitCondition option> as x -> x
+    | x -> FsExpr.Cast<int * WaitCondition option>(x)
+
+let unitExpr = <@@ () @@>
+
+let private unboxMethod =
+    match <@@ unbox null @@> with
+    | Patterns.Call (_, methodInfo, _) ->
+        methodInfo.GetGenericMethodDefinition()
+    | _ -> failwith "unreachable"
+/// `obj` を指定した型 `ty` に変換する
+let unboxExpr ty expr =
+    FsExpr.Call(unboxMethod.MakeGenericMethod([| ty |]), [expr])
+
+let oneWay = <@ 0, Option<WaitCondition>.None @>
+
 let continueWithLet var expr body =
     let rec f = function
         | Patterns.Sequential (x, y) ->
@@ -126,3 +118,33 @@ let mkSeqExpr first second =
         | x ->
             FsExpr.Sequential(x, second)
     f first
+
+type LetRecKind =
+    | NotRecursive
+    | Recursive
+    | MutuallyRecursive
+
+let bindingsWithKind (bindings: (FsVar * FsExpr) list) =
+    let varSet = bindings |> Seq.map fst |> set
+    let k self =
+        let otherVars = varSet |> Set.remove self
+        let rec exprKind = function
+            | ExprShape.ShapeVar v ->
+                if otherVars |> Set.contains v then MutuallyRecursive
+                elif v = self then Recursive
+                else NotRecursive
+            | ExprShape.ShapeLambda (_, x) -> exprKind x
+            | ExprShape.ShapeCombination (_, exprs) ->
+                let rec kmany = function
+                    | e :: es ->
+                        let x = exprKind e
+                        if x = MutuallyRecursive then MutuallyRecursive
+                        else
+                            let y = kmany es
+                            match y with
+                            | Recursive | MutuallyRecursive -> y
+                            | NotRecursive -> x
+                    | [] -> NotRecursive
+                kmany exprs
+        exprKind
+    bindings |> List.map (fun ((v, e) as t) -> t, k v e)
