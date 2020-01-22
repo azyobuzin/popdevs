@@ -1,0 +1,10 @@
+on: push
+jobs:
+  test:
+    runs-on: ubuntu-18.04
+    container: mcr.microsoft.com/dotnet/core/sdk:3.1
+    steps:
+      - uses: actions/checkout@v2
+      - name: Run Tests
+        run: dotnet run -- --no-spinner
+        working-directory: PopDEVS.Tests
