@@ -5,12 +5,37 @@ open FSharp.Quotations
 open FSharp.Quotations.Evaluator
 open FSharp.Quotations.ExprShape
 open FSharpx.Collections
-open MutableCfg
+open PgUtils
 open PopDEVS
     
 [<AutoOpen>]
-module ProcessModelBuilder =
-    let processModel<'I> = ProcessModelBuilderImpl.Builder<'I>()
+module ProcessModelBuilders =
+    type ProcessModelBuilder<'I>() =
+        let doNotCall () =
+            invalidOp "Do not call methods of Builder from your code directly."
+    
+        member __.Bind<'a, 'b>(_computation: WaitCondition<'I, 'a>, _binder: 'a -> 'b) : 'b =
+            doNotCall ()
+    
+        member __.Combine<'a>(_left: unit, _right: 'a) : 'a =
+            doNotCall ()
+    
+        member __.While(_guard: unit -> bool, _computation: unit) : unit =
+            doNotCall ()
+    
+        member __.Zero() : unit =
+            doNotCall ()
+    
+        member __.Delay<'a>(_: unit -> 'a) : 'a =
+            doNotCall ()
+    
+        member __.Quote(_: Expr<unit>) : Expr<unit> =
+            doNotCall ()
+
+        member this.Run(expr: Expr<unit>) =
+            ProcessModelBuilderResult<'I>(this, expr)
+
+    let processModel<'I> = ProcessModelBuilder<'I>()
 
 type ProcessModel<'I, 'O> = ProcessEnv<'I, 'O> -> ProcessModelBuilderResult<'I>
 
@@ -106,6 +131,8 @@ module ProcessModel =
 
     /// `node.Expr` をコンパイルし、 `variables -> waitResult -> (int * WaitCondition option)` の関数を返す
     let private compileNode varConvTable (node: ImmutableNode) =
+        let dummyParameter = FsVar("_", typeof<obj>)
+
         let expr =
             /// 変数から、実際に格納する配列の添え字を求める
             let indexExpr var =
@@ -138,7 +165,7 @@ module ProcessModel =
             FsExpr.Lambda(
                 varsParam,
                 FsExpr.Lambda(
-                    node.LambdaParameter,
+                    Option.defaultValue dummyParameter node.LambdaParameter,
                     convVar node.Expr))
             |> FsExpr.Cast<obj[] -> obj -> int * WaitCondition option>
 
@@ -154,18 +181,16 @@ module ProcessModel =
     let createAtomicModel<'I, 'O> (processModel: ProcessModel<'I, 'O>) =
         let processEnv = ProcessEnv<'I, 'O>()
 
-        let cfg =
-            let builderResult = processModel processEnv
-            StateReducer.reduceGraph builderResult.ControlFlowGraph
+        let graph = processModel processEnv |> ProcessGraphBuilder.build
 
         let varsArray =
-            cfg.Variables
+            graph.Variables
             |> Seq.map (fun var -> Option.defaultValue Unchecked.defaultof<obj> var.CapturedValue)
             |> Seq.toArray
 
         let compile =
             let varConvTable =
-                cfg.Variables
+                graph.Variables
                 |> Seq.indexed
                 |> Seq.map (fun (i, v) -> v.FsVar, i)
                 |> Map.ofSeq
@@ -174,6 +199,6 @@ module ProcessModel =
                 { Transition = compileNode n <| varsArray
                   Edges = n.Edges })
 
-        let states = ImmutableArray.CreateRange(cfg.Nodes, compile)
+        let states = ImmutableArray.CreateRange(graph.Nodes, compile)
 
         createAtomicModelFromCompiledStates processEnv states

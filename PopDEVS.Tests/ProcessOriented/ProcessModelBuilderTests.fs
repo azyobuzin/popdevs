@@ -2,20 +2,62 @@ module PopDEVS.Tests.ProcessOriented.ProcessModelBuilderTests
 
 open System
 open System.Collections.Immutable
+open System.Reflection
 open Expecto
 open FSharp.Quotations
 open PopDEVS.ProcessOriented
-open MutableCfg
+open PgUtils
 
-let private createImmutableNode (index, hasMultipleIncomingEdges, edges) (expr: FsExpr<obj -> int * WaitCondition option>) : ImmutableNode =
+let private createImmutableNode index edges (expr: FsExpr<obj -> int * WaitCondition option>) : ImmutableNode =
     match expr with
     | Patterns.Lambda (lambdaVar, lambdaBody) ->
         { Index = index
-          LambdaParameter = lambdaVar
+          LambdaParameter = Some lambdaVar
           Expr = lambdaBody |> excast
-          HasMultipleIncomingEdges = hasMultipleIncomingEdges
           Edges = ImmutableArray.CreateRange(edges) }
     | _ -> invalidArg (nameof expr) "expr is not a lambda expression."
+
+let rec private exprEqual varMap leftExpr rightExpr =
+    match leftExpr, rightExpr with
+    | Patterns.Let (lv, le, lb), Patterns.Let (rv, re, rb) ->
+        exprEqual varMap le re || exprEqual (Map.add lv rv varMap) lb rb
+    | Patterns.Let _, _ | _, Patterns.Let _ -> false
+    | Patterns.LetRecursive (lvs, lb), Patterns.LetRecursive (rvs, rb) ->
+        let varMapOpt =
+            let rec updateVarMap varMap = function
+                | (lv, _) :: lvs, (rv, _) :: rvs ->
+                    updateVarMap (Map.add lv rv varMap) (lvs, rvs)
+                | [], [] -> Some varMap // A number of the elements is same
+                | _ -> None
+            updateVarMap varMap (lvs, rvs)
+        match varMapOpt with
+        | Some varMap ->
+            let rec checkExprs = function
+                | (_, le) :: lvs, (_, re) :: rvs ->
+                    exprEqual varMap le re && checkExprs (lvs, rvs)
+                | [], [] -> true
+                | _ -> failwith "unreachable"
+            checkExprs (lvs, rvs) && exprEqual varMap lb rb
+        | None -> false
+    | Patterns.LetRecursive _, _ | _, Patterns.LetRecursive _ -> false
+    | ExprShape.ShapeVar lv, ExprShape.ShapeVar rv ->
+        match Map.tryFind lv varMap with
+        | Some x -> x = rv
+        | _ -> lv = rv
+    | ExprShape.ShapeLambda (lv, le), ExprShape.ShapeLambda (rv, re) ->
+        exprEqual (Map.add lv rv varMap) le re
+    | ExprShape.ShapeCombination (ls, les), ExprShape.ShapeCombination(rs, res) ->
+        let getExprConstInfo shape =
+            shape.GetType().InvokeMember("Item1",
+                BindingFlags.Public ||| BindingFlags.Instance ||| BindingFlags.GetProperty,
+                null, shape, null)
+        let rec checkExprs = function
+            | le :: les, re :: res ->
+                exprEqual varMap le re && checkExprs (les, res)
+            | [], [] -> true // A number of the elements is same
+            | _ -> false
+        obj.Equals(getExprConstInfo ls, getExprConstInfo rs) && checkExprs (les, res)
+    | _ -> false
 
 let private expectNodeEqual (actual: ImmutableNode) (expected: ImmutableNode) index =
     let msg propName =
@@ -26,23 +68,17 @@ let private expectNodeEqual (actual: ImmutableNode) (expected: ImmutableNode) in
         actual.Index expected.Index
         (msg (nameof expected.Index))
 
-    // ラムダパラメータを書き換えて、 Equals が成立するようにする
-    let actualExpr =
-        let substitution var =
-            if var = actual.LambdaParameter then
-                Some (FsExpr.Var(expected.LambdaParameter))
-            else
-                None
-        actual.Expr.Substitute(substitution)
+    let varMap =
+        [
+            match actual.LambdaParameter, expected.LambdaParameter with
+            | Some actualParam, Some expectedParam ->
+                yield actualParam, expectedParam
+            | _ -> ()
+        ] |> Map.ofList
 
-    Expect.equal
-        actualExpr expected.Expr.Raw
+    Expect.isTrue
+        (exprEqual varMap actual.Expr expected.Expr)
         (msg (nameof expected.Expr))
-    
-    Expect.equal
-        actual.HasMultipleIncomingEdges
-        expected.HasMultipleIncomingEdges
-        (msg (nameof expected.HasMultipleIncomingEdges))
 
     Expect.sequenceEqual
         actual.Edges expected.Edges
@@ -50,8 +86,8 @@ let private expectNodeEqual (actual: ImmutableNode) (expected: ImmutableNode) in
 
 [<Tests>]
 let tests =
-    testList "ProcessModelBuilder" [
-        test "convert computation expression with loop and bind to CFG" {
+    testList "ProcessGraphBuilder" [
+        test "convert computation expression with loop and bind to process graph" {
             let returnInputWaitCondition = Unchecked.defaultof<WaitCondition<int, int>>
             let unitWaitCondition = Unchecked.defaultof<WaitCondition<int, unit>>
 
@@ -65,7 +101,7 @@ let tests =
                         i <- i + 1
                 }
 
-            let graph = builderResult.ControlFlowGraph
+            let graph = ProcessGraphBuilder.build builderResult
             let actualNodes = graph.Nodes
 
             let getVar name =
@@ -75,40 +111,33 @@ let tests =
 
             let iVar = getVar "i"
             let iExpr = FsExpr.Cast<int>(FsExpr.Var(iVar))
-            let vVar = getVar "v"
-            let vExpr = FsExpr.Cast<int>(FsExpr.Var(vVar))
             let returnInputWaitConditionExpr = FsExpr.Cast<WaitCondition<int, int>>(FsExpr.Var(getVar (nameof returnInputWaitCondition)))
             let unitWaitConditionExpr = FsExpr.Cast<WaitCondition<int, unit>>(FsExpr.Var(getVar (nameof unitWaitCondition)))
 
             let expectedNodes =
                 [
-                    createImmutableNode (0, false, [1])
+                    createImmutableNode 0 [1]
                         <@ fun _ -> %%(FsExpr.VarSet(iVar, <@@ 1 @@>)); 0, Option<WaitCondition>.None @>
 
-                    createImmutableNode (1, true, [2; 3])
-                        <@ fun _ -> (if %iExpr <= 9 then 1 else 0), Option<WaitCondition>.None @>
+                    createImmutableNode 1 [2]
+                        <@ fun _ -> (if %iExpr <= 9 then 0 else 1), Option<WaitCondition>.None @>
 
-                    createImmutableNode (2, false, [])
-                        <@ fun _ -> 0, Option<WaitCondition>.None @>
-
-                    createImmutableNode (3, false, [4])
+                    createImmutableNode 2 [3]
                         <@ fun _ -> 0, Some (%returnInputWaitConditionExpr :> WaitCondition) @>
 
-                    createImmutableNode (4, false, [5; 6])
-                        (let waitResultVar = FsVar("waitResult", typeof<obj>)
-                         FsExpr.Cast<obj -> int * WaitCondition option>(
-                            FsExpr.Lambda(waitResultVar,
-                                FsExpr.Sequential(
-                                    FsExpr.VarSet(vVar, FsExpr.Var(waitResultVar) |> unboxExpr typeof<int>),
-                                    <@@ (if %vExpr % 2 = 0 then 1 else 0), Option<WaitCondition>.None @@>))))
+                    createImmutableNode 3 [4; 5]
+                        <@ fun waitResult ->
+                            (if (let compilerGeneratedVar = waitResult |> unbox<int>
+                                 let v = compilerGeneratedVar
+                                 v % 2 = 0) then 0 else 1), Option<WaitCondition>.None @>
+                            
+                    createImmutableNode 4 [5]
+                        <@ fun _ -> 0, Some (%unitWaitConditionExpr :> WaitCondition) @>
 
-                    createImmutableNode (5, true, [1])
+                    createImmutableNode 5 [1]
                         <@ fun _ ->
                             %%(FsExpr.VarSet(iVar, <@@ %iExpr + 1 @@>))
                             0, Option<WaitCondition>.None @>
-
-                    createImmutableNode (6, false, [5])
-                        <@ fun _ -> 0, Some (%unitWaitConditionExpr :> WaitCondition) @>
                 ]
 
             Expect.hasLength actualNodes expectedNodes.Length "graph has 7 nodes"
