@@ -2,6 +2,7 @@ module PopDEVS.Tests.ProcessOriented.ProcessModelBuilderTests
 
 open System
 open System.Collections.Immutable
+open System.Reflection
 open Expecto
 open FSharp.Quotations
 open PopDEVS.ProcessOriented
@@ -16,6 +17,47 @@ let private createImmutableNode index edges (expr: FsExpr<obj -> int * WaitCondi
           Edges = ImmutableArray.CreateRange(edges) }
     | _ -> invalidArg (nameof expr) "expr is not a lambda expression."
 
+let rec private exprEqual varMap leftExpr rightExpr =
+    match leftExpr, rightExpr with
+    | Patterns.Let (lv, le, lb), Patterns.Let (rv, re, rb) ->
+        exprEqual varMap le re || exprEqual (Map.add lv rv varMap) lb rb
+    | Patterns.Let _, _ | _, Patterns.Let _ -> false
+    | Patterns.LetRecursive (lvs, lb), Patterns.LetRecursive (rvs, rb) ->
+        let varMapOpt =
+            let rec updateVarMap varMap = function
+                | (lv, _) :: lvs, (rv, _) :: rvs ->
+                    updateVarMap (Map.add lv rv varMap) (lvs, rvs)
+                | [], [] -> Some varMap
+                | _ -> None
+            updateVarMap varMap (lvs, rvs)
+        match varMapOpt with
+        | Some varMap ->
+            let rec checkExprs = function
+                | (_, le) :: lvs, (_, re) :: rvs ->
+                    exprEqual varMap le re && checkExprs (lvs, rvs)
+                | [], [] -> true
+                | _ -> failwith "unreachable"
+            checkExprs (lvs, rvs) && exprEqual varMap lb rb
+        | None -> false
+    | Patterns.LetRecursive _, _ | _, Patterns.LetRecursive _ -> false
+    | ExprShape.ShapeVar lv, ExprShape.ShapeVar rv ->
+        lv = rv || (match Map.tryFind lv varMap with
+                    | Some x when x = rv -> true | _ -> false)
+    | ExprShape.ShapeLambda (lv, le), ExprShape.ShapeLambda (rv, re) ->
+        exprEqual (Map.add lv rv varMap) le re
+    | ExprShape.ShapeCombination (ls, les), ExprShape.ShapeCombination(rs, res) ->
+        let getExprConstInfo shape =
+            shape.GetType().InvokeMember("Item1",
+                BindingFlags.Public ||| BindingFlags.Instance ||| BindingFlags.GetProperty,
+                null, shape, null)
+        let rec checkExprs = function
+            | le :: les, re :: res ->
+                exprEqual varMap le re && checkExprs (les, res)
+            | [], [] -> true
+            | _ -> false
+        checkExprs (les, res)
+    | _ -> false
+
 let private expectNodeEqual (actual: ImmutableNode) (expected: ImmutableNode) index =
     let msg propName =
         String.Format("actualNodes.[{0}].{1} = expectedNodes.[{0}].{1}",
@@ -25,20 +67,16 @@ let private expectNodeEqual (actual: ImmutableNode) (expected: ImmutableNode) in
         actual.Index expected.Index
         (msg (nameof expected.Index))
 
-    // ラムダパラメータを書き換えて、 Equals が成立するようにする
-    let actualExpr =
-        match expected.LambdaParameter, actual.LambdaParameter with
-        | Some expectedP, Some actualP ->
-            let substitution var =
-                if var = actualP then
-                    Some (FsExpr.Var(expectedP))
-                else
-                    None
-            actual.Expr.Substitute(substitution) |> excast
-        | _ -> actual.Expr
+    let varMap =
+        [
+            match actual.LambdaParameter, expected.LambdaParameter with
+            | Some actualParam, Some expectedParam ->
+                yield actualParam, expectedParam
+            | _ -> ()
+        ] |> Map.ofList
 
-    Expect.equal
-        actualExpr expected.Expr
+    Expect.isTrue
+        (exprEqual varMap actual.Expr expected.Expr)
         (msg (nameof expected.Expr))
 
     Expect.sequenceEqual
@@ -72,9 +110,6 @@ let tests =
 
             let iVar = getVar "i"
             let iExpr = FsExpr.Cast<int>(FsExpr.Var(iVar))
-            // TODO: v は let に変換できるため、 Variables に含まれない
-            let vVar = getVar "v"
-            let vExpr = FsExpr.Cast<int>(FsExpr.Var(vVar))
             let returnInputWaitConditionExpr = FsExpr.Cast<WaitCondition<int, int>>(FsExpr.Var(getVar (nameof returnInputWaitCondition)))
             let unitWaitConditionExpr = FsExpr.Cast<WaitCondition<int, unit>>(FsExpr.Var(getVar (nameof unitWaitCondition)))
 
@@ -93,12 +128,9 @@ let tests =
                         <@ fun _ -> 0, Some (%returnInputWaitConditionExpr :> WaitCondition) @>
 
                     createImmutableNode 4 [5; 6]
-                        (let waitResultVar = FsVar("waitResult", typeof<obj>)
-                         FsExpr.Cast<obj -> int * WaitCondition option>(
-                            FsExpr.Lambda(waitResultVar,
-                                FsExpr.Sequential(
-                                    FsExpr.VarSet(vVar, FsExpr.Var(waitResultVar) |> unboxExpr typeof<int>),
-                                    <@@ (if %vExpr % 2 = 0 then 1 else 0), Option<WaitCondition>.None @@>))))
+                        <@ fun waitResult ->
+                            let v = waitResult |> unbox<int>
+                            (if v % 2 = 0 then 1 else 0), Option<WaitCondition>.None @>
 
                     createImmutableNode 5 [1]
                         <@ fun _ ->
