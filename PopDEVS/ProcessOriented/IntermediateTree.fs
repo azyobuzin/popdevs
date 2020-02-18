@@ -118,7 +118,7 @@ let toTree (input: ProcessModelBuilderResult<'I>) =
         let rec f = function
             | Tree.Expr (x, Tree.Zero) ->
                 match cont with
-                | Tree.Expr (y, z) -> Tree.Expr (FsExpr.Sequential(x, y), z)
+                | Tree.Expr (y, z) -> Tree.Expr (mkSeqExpr x y, z)
                 | _ -> Tree.Expr (x, cont)
             | Tree.Expr (x, y) -> Tree.Expr (x, f y)
             | Tree.Let (x, y) -> Tree.Let (x, f y)
@@ -190,7 +190,7 @@ let toTree (input: ProcessModelBuilderResult<'I>) =
                         let initializeTree =
                             Tree.Expr (FsExpr.DefaultValue(v.Type),
                                 Tree.Let (v, Tree.Zero))
-                        let exprTree = toTreeCore (FsExpr.VarSet(v, e))
+                        let exprTree = toTreeCore (mkVarSet v e)
                         t |> continueWith (initializeTree |> continueWith exprTree), b
                     | _ -> s
                 bindings |> List.fold f (Tree.Zero, body)
@@ -209,7 +209,7 @@ let toTree (input: ProcessModelBuilderResult<'I>) =
 
             let tree =
                 let f (v, e) t =
-                    t |> continueWith (toTreeCore (FsExpr.VarSet(v, e)))
+                    t |> continueWith (toTreeCore (mkVarSet v e))
                 List.foldBack f ves tree
 
             tree |> continueWith (toTreeCore body) |> Tree.reduce
@@ -259,7 +259,7 @@ let toTree (input: ProcessModelBuilderResult<'I>) =
                 let tv = tmpVar ("varSet", var.Type)
                 Tree.Let (tv, Tree.Expr (FsExpr.VarSet(var, FsExpr.Var(tv)), Tree.Zero))
             let rec contVarSet = function
-                | Tree.Expr (x, Tree.Zero) -> Tree.Expr (FsExpr.VarSet(var, x), Tree.Zero)
+                | Tree.Expr (x, Tree.Zero) -> Tree.Expr (mkVarSet var x, Tree.Zero)
                 | Tree.Expr (x, y) -> Tree.Expr (x, contVarSet y)
                 | Tree.Let (x, y) -> Tree.Let (x, contVarSet y)
                 | Tree.If (x, y, Tree.Zero) -> Tree.If (x, y, setWithLet())

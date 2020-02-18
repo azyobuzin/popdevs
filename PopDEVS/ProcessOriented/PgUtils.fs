@@ -95,7 +95,7 @@ let unboxExpr ty expr =
 
 let oneWay = <@ 0, Option<WaitCondition>.None @>
 
-let continueWithLet var expr body =
+let private transformLastExpr transform =
     let rec f = function
         | Patterns.Sequential (x, y) ->
             FsExpr.Sequential(x, f y)
@@ -104,20 +104,17 @@ let continueWithLet var expr body =
         | Patterns.LetRecursive (x, y) ->
             FsExpr.LetRecursive(x, f y)
         | x ->
-            FsExpr.Let(var, x, body)
-    f expr
+            transform x
+    f
+
+let continueWithLet var expr body =
+    expr |> transformLastExpr (fun x -> FsExpr.Let(var, x, body))
 
 let mkSeqExpr first second =
-    let rec f = function
-        | Patterns.Sequential (x, y) ->
-            FsExpr.Sequential(x, f y)
-        | Patterns.Let (x, y, z) ->
-            FsExpr.Let(x, y, f z)
-        | Patterns.LetRecursive (x, y) ->
-            FsExpr.LetRecursive(x, f y)
-        | x ->
-            FsExpr.Sequential(x, second)
-    f first
+    first |> transformLastExpr (fun x -> FsExpr.Sequential(x, second))
+
+let mkVarSet var =
+    transformLastExpr (fun x -> FsExpr.VarSet(var, x))
 
 type LetRecKind =
     | NotRecursive

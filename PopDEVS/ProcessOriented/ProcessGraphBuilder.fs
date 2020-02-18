@@ -128,7 +128,7 @@ let treeToGraph tree =
 
             | Tree.Expr (x, Tree.Let (var, cont)) ->
                 if env.Variables.ContainsKey(var) then
-                    withTree (Tree.Expr (FsExpr.VarSet(var, x), cont))
+                    withTree (Tree.Expr (mkVarSet var x, cont))
                 else
                     // let 式に変換できると判定された場合、 Variables に登録されない
                     match cont with
